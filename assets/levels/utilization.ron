@@ -1,0 +1,26 @@
+(
+    model: "utilization.glb",
+    atmosphere: (
+        sky_color: (0.06, 0.05, 0.04),
+        fog_start: 20.0,
+        fog_end: 90.0,
+        sun_direction: (-0.3, -1.0, -0.4),
+        sun_strength: 0.08,
+        ambient: 0.08,
+    ),
+    target_health: 3.0,
+    light_scale: 0.0006,
+    default_light_range: 14.0,
+    arenas: [(
+        trigger: "arena_hall_trigger",
+        doors: ["arena_hall_door"],
+        waves: ["arena_hall_wave_1", "arena_hall_wave_2"],
+        machine: Some((
+            object: "arena_hall_machine",
+            spawn_point: "arena_hall_machine_spawn",
+            health: 6.0,
+            spawn_interval_seconds: 3.0,
+            max_alive: 6,
+        )),
+    )],
+)

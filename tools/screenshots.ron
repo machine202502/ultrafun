@@ -1,0 +1,11 @@
+(
+    level: "utilization",
+    shots: [
+        (name: "01_start", position: (0.0, 1.01, -3.0), yaw_degrees: 0.0, pitch_degrees: -8.0),
+        (name: "02_disposal_back", position: (5.0, 0.01, -17.0), yaw_degrees: 200.0, pitch_degrees: 0.0),
+        (name: "03_corridor", position: (-7.0, 0.01, -27.0), yaw_degrees: 0.0, pitch_degrees: 0.0),
+        (name: "04_hall_entrance", position: (-7.0, 0.01, -64.0), yaw_degrees: 20.0, pitch_degrees: 5.0),
+        (name: "05_hall_mezzanine", position: (-20.0, 4.51, -95.0), yaw_degrees: 104.0, pitch_degrees: -15.0),
+        (name: "06_machine", position: (6.0, 0.01, -90.0), yaw_degrees: 15.0, pitch_degrees: 0.0),
+    ],
+)

@@ -1,0 +1,11 @@
+{
+    "dispatcher.reject_announced": "Unit #4417 has been classified as defective. Thank you for your contribution.",
+    "dispatcher.arena_started": "Unauthorized movement in the assembly hall. Disposal units dispatched.",
+    "dispatcher.arena_cleared": "Assembly hall productivity has dropped to zero. Investigating.",
+    "dispatcher.player_died": "Defective unit disposed of. Resuming normal operation.",
+    "dispatcher.level_complete": "Pneumatic delivery in progress. Please keep your limbs inside the tube.",
+    "report.title": "SHIFT REPORT",
+    "report.time": "Time",
+    "report.kills": "Units disposed",
+    "report.restart": "Press R to start the shift again",
+}

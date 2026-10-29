@@ -1,0 +1,15 @@
+(
+    height: 2.0,
+    radius: 0.5,
+    max_health: 2.0,
+    run_speed: 12.0,
+    attack_range: 2.0,
+    attack_reach_leeway: 0.5,
+    windup_seconds: 0.4,
+    damage: 15.0,
+    recover_seconds: 1.0,
+    gravity: 40.0,
+    max_fall_speed: 60.0,
+    step_height: 0.5,
+    max_walkable_slope_degrees: 45.0,
+)

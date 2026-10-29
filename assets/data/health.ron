@@ -1,0 +1,12 @@
+(
+    max_health: 100.0,
+    restart_delay_seconds: 1.5,
+    parts_per_kill: 4,
+    part_heal: 5.0,
+    part_launch_speed: 6.0,
+    part_gravity: 40.0,
+    part_attract_radius: 6.0,
+    part_attract_speed: 30.0,
+    part_collect_radius: 1.2,
+    part_lifetime_seconds: 4.0,
+)

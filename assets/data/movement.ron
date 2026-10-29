@@ -1,0 +1,47 @@
+(
+    standing_height: 2.5,
+    slide_height: 1.2,
+    radius: 0.5,
+    eye_height: 2.1,
+    slide_eye_height: 0.9,
+    step_height: 0.5,
+    max_walkable_slope_degrees: 45.0,
+    max_pitch_degrees: 89.0,
+
+    run_speed: 16.5,
+    ground_acceleration_seconds: 0.1,
+    air_acceleration: 40.0,
+    ground_excess_friction: 30.0,
+    air_excess_friction: 4.0,
+
+    gravity: 40.0,
+    jump_speed: 16.5,
+    max_fall_speed: 60.0,
+    coyote_seconds: 0.1,
+    jump_buffer_seconds: 0.1,
+
+    stamina_max: 3.0,
+    stamina_regen_per_second: 0.7,
+
+    dash_cost: 1.0,
+    dash_jump_cost: 1.0,
+    dash_speed: 49.5,
+    dash_seconds: 0.2,
+
+    slide_speed: 24.0,
+    slide_friction: 10.0,
+    slide_max_speed: 72.0,
+
+    wall_jumps_max: 3,
+    wall_jump_away_speed: 15.0,
+    wall_jump_up_speed: 15.0,
+    slide_wall_jump_up_speed: 8.0,
+    wall_max_tilt_degrees: 20.0,
+    wall_contact_distance: 0.2,
+    wall_cling_start_fall_speed: 2.0,
+    wall_cling_fall_speed_growth: 15.0,
+
+    slam_speed: 100.0,
+    slam_bounce_seconds: 0.1,
+    slam_bounce_max_height: 15.0,
+)
