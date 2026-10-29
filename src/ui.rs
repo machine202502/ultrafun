@@ -18,11 +18,17 @@ const REPORT_TITLE_SIZE: f32 = 34.0;
 const REPORT_LINE_SIZE: f32 = 24.0;
 const REPORT_LINE_SPACING: f32 = 12.0;
 const PANEL_PADDING: f32 = 16.0;
+const KEY_SIZE: f32 = 18.0;
+const KEY_COLOR: Color32 = Color32::from_rgb(255, 216, 64);
+const KEY_MARGIN: f32 = 24.0;
+const KEY_LINE_SPACING: f32 = 4.0;
 
 pub struct Hud {
     pub health_fraction: f32,
     pub dead: bool,
+    pub cheats: Option<String>,
     pub subtitle: Option<String>,
+    pub keys: Vec<String>,
     pub report: Option<Vec<String>>,
 }
 
@@ -34,6 +40,16 @@ pub fn draw_hud(ui: &egui::Ui, hud: &Hud) {
     }
     draw_crosshair(painter, screen);
     draw_health(painter, screen, hud.health_fraction);
+    if let Some(cheats) = &hud.cheats {
+        painter.text(
+            screen.left_top() + egui::vec2(16.0, 16.0),
+            egui::Align2::LEFT_TOP,
+            cheats,
+            egui::FontId::monospace(14.0),
+            Color32::from_rgb(255, 210, 90),
+        );
+    }
+    draw_keys(painter, screen, &hud.keys);
     if let Some(subtitle) = &hud.subtitle {
         draw_subtitle(painter, screen, subtitle);
     }
@@ -60,6 +76,19 @@ fn draw_health(painter: &egui::Painter, screen: Rect, fraction: f32) {
     let mut fill = bar;
     fill.set_width(bar.width() * fraction.clamp(0.0, 1.0));
     painter.rect_filled(fill, 0.0, HEALTH_BAR_FILL);
+}
+
+fn draw_keys(painter: &egui::Painter, screen: Rect, keys: &[String]) {
+    let mut bottom = screen.bottom() - KEY_MARGIN;
+    for key in keys {
+        let galley = painter.layout_no_wrap(key.clone(), FontId::proportional(KEY_SIZE), KEY_COLOR);
+        let height = galley.size().y;
+        let rect = Align2::RIGHT_BOTTOM
+            .anchor_size(pos2(screen.right() - KEY_MARGIN, bottom), galley.size());
+        painter.rect_filled(rect.expand(4.0), 3.0, PANEL_BACK);
+        painter.galley(rect.min, galley, KEY_COLOR);
+        bottom -= height + KEY_LINE_SPACING;
+    }
 }
 
 fn draw_subtitle(painter: &egui::Painter, screen: Rect, text: &str) {
@@ -106,7 +135,7 @@ fn draw_report(painter: &egui::Painter, screen: Rect, lines: &[String]) {
 
 pub fn build_hud(game: &game::Game, dispatcher: &Dispatcher, texts: &Texts) -> Hud {
     let report = game.result.map(|result| {
-        vec![
+        let mut lines = vec![
             texts.get("report.title").to_owned(),
             format!(
                 "{}: {}",
@@ -115,14 +144,25 @@ pub fn build_hud(game: &game::Game, dispatcher: &Dispatcher, texts: &Texts) -> H
             ),
             format!("{}: {}", texts.get("report.kills"), result.kills),
             texts.get("report.restart").to_owned(),
-        ]
+        ];
+        if game.level().next_level.is_some() {
+            lines.push(texts.get("report.next").to_owned());
+        }
+        lines
     });
     Hud {
         health_fraction: game.player.health / game.config.health.max_health,
         dead: game.restart_countdown_seconds.is_some(),
+        cheats: game.cheats.then(|| texts.get("hud.cheats").to_owned()),
         subtitle: dispatcher
             .current_key()
             .map(|key| texts.get(key).to_owned()),
+        keys: game
+            .keys
+            .iter()
+            .filter(|key| key.collected)
+            .map(|key| texts.get(&format!("key.{}", key.name)).to_owned())
+            .collect(),
         report,
     }
 }

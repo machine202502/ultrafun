@@ -19,5 +19,6 @@
         dash: ShiftLeft,
         slide: ControlLeft,
         respawn: KeyR,
+        cheats: F4,
     ),
 )

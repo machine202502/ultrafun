@@ -71,6 +71,27 @@ pub fn move_player(player: &mut Player, config: &MovementConfig, world: &Collisi
     move_body(&body, state, snap, world, dt);
 }
 
+pub fn carry_player(
+    player: &mut Player,
+    config: &MovementConfig,
+    world: &CollisionWorld,
+    motion: Vec3,
+) {
+    let body = player_body(config, player.is_low);
+    let state = BodyState {
+        position: &mut player.position,
+        velocity: &mut player.velocity,
+        grounded: &mut player.grounded,
+    };
+    carry_body(&body, state, world, motion);
+}
+
+pub fn carry_body(body: &Body, state: BodyState, world: &CollisionWorld, motion: Vec3) {
+    let center = body.center(*state.position);
+    let (center_after, _) = slide_move(world, body, center, Vec3::ZERO, motion, *state.grounded);
+    *state.position = center_after - Vec3::Y * body.half_height;
+}
+
 pub fn move_body(body: &Body, state: BodyState, snap: bool, world: &CollisionWorld, dt: f32) {
     let mut center = body.center(*state.position);
     depenetrate(world, body, &mut center);
@@ -162,6 +183,7 @@ fn slide_move(
             center += remaining;
             break;
         };
+
         let travel = (hit.fraction * length - SKIN).max(0.0);
         center += remaining / length * travel;
         remaining *= 1.0 - hit.fraction;

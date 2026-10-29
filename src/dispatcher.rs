@@ -4,7 +4,7 @@ const LINE_SECONDS: f32 = 4.0;
 
 #[derive(Default)]
 pub struct Dispatcher {
-    line: Option<(&'static str, f32)>,
+    line: Option<(String, f32)>,
 }
 
 impl Dispatcher {
@@ -15,9 +15,14 @@ impl Dispatcher {
             GameEvent::ArenaCleared { .. } => "dispatcher.arena_cleared",
             GameEvent::PlayerDied => "dispatcher.player_died",
             GameEvent::LevelCompleted => "dispatcher.level_complete",
+            GameEvent::CheckpointReached { .. } => "dispatcher.checkpoint",
+            GameEvent::Say { key } => {
+                self.line = Some((key.clone(), LINE_SECONDS));
+                return true;
+            }
             _ => return false,
         };
-        self.line = Some((key, LINE_SECONDS));
+        self.line = Some((key.to_owned(), LINE_SECONDS));
         true
     }
 
@@ -30,7 +35,7 @@ impl Dispatcher {
         }
     }
 
-    pub fn current_key(&self) -> Option<&'static str> {
-        self.line.map(|(key, _)| key)
+    pub fn current_key(&self) -> Option<&str> {
+        self.line.as_ref().map(|(key, _)| key.as_str())
     }
 }

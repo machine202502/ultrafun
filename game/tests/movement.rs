@@ -344,3 +344,80 @@ fn jump_and_dash_emit_events() {
     press(&mut game, dash());
     assert!(game.events.contains(&GameEvent::Dashed));
 }
+#[test]
+fn falling_out_of_the_map_kills_the_player() {
+    let mut game = game_with_enemies(Vec::new(), Vec::new(), Vec3::new(0.0, -100.0, 0.0));
+    run(&mut game, Actions::default(), 0.05);
+    assert_eq!(game.player.health, 0.0);
+}
+
+#[test]
+fn jumping_down_a_floor_inside_the_map_does_not_kill() {
+    let floor = solid(Vec3::new(0.0, -1.0, 0.0), Vec3::new(40.0, 1.0, 40.0));
+    let mut game = game_with_enemies(vec![floor], Vec::new(), Vec3::new(0.0, 12.0, 0.0));
+    run(&mut game, Actions::default(), 1.5);
+    assert!(game.player.health > 0.0, "health {}", game.player.health);
+}
+#[test]
+fn cheats_fly_through_walls_and_up() {
+    let wall = solid(Vec3::new(0.0, 2.0, -2.0), Vec3::new(20.0, 4.0, 0.5));
+    let mut game = game_with_enemies(vec![wall], Vec::new(), Vec3::ZERO);
+
+    let toggle = Actions {
+        toggle_cheats: true,
+        ..Actions::default()
+    };
+    game.update(&toggle);
+    assert!(game.cheats);
+
+    let forward = Actions {
+        move_input: Vec2::Y,
+        ..Actions::default()
+    };
+    run(&mut game, forward, 0.5);
+    assert!(
+        game.player.position.z < -3.0,
+        "player did not pass through the wall: {}",
+        game.player.position
+    );
+
+    game.player.pitch = 1.2;
+    run(&mut game, forward, 0.3);
+    assert!(
+        game.player.position.y > 1.0,
+        "player did not fly up: {}",
+        game.player.position
+    );
+}
+
+#[test]
+fn cheats_can_be_switched_off_again() {
+    let floor = solid(Vec3::new(0.0, -1.0, 0.0), Vec3::new(40.0, 1.0, 40.0));
+    let mut game = game_with_enemies(vec![floor], Vec::new(), Vec3::new(0.0, 5.0, 0.0));
+    let toggle = Actions {
+        toggle_cheats: true,
+        ..Actions::default()
+    };
+    game.update(&toggle);
+    let up = Actions {
+        move_input: Vec2::Y,
+        ..Actions::default()
+    };
+    game.player.pitch = 1.4;
+    run(&mut game, up, 0.3);
+    assert!(
+        game.player.position.y > 6.0,
+        "did not fly: {}",
+        game.player.position.y
+    );
+
+    game.update(&toggle);
+    assert!(!game.cheats);
+    game.player.pitch = 0.0;
+    run(&mut game, Actions::default(), 1.5);
+    assert!(
+        (game.player.position.y - 0.01).abs() < 0.2,
+        "did not fall back to the floor: {}",
+        game.player.position.y
+    );
+}

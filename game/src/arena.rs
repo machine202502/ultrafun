@@ -5,6 +5,7 @@ use crate::collision::CollisionWorld;
 use crate::{Enemy, Game, GameEvent, STEP_SECONDS, Target, TargetKind};
 
 const MACHINE_TARGET_ID_BASE: u32 = 10_000;
+const STAND_ON_TOP_TOLERANCE: f32 = 0.05;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Zone {
@@ -15,6 +16,17 @@ pub struct Zone {
 impl Zone {
     pub fn contains(&self, point: Vec3) -> bool {
         ((point - self.center).abs() - self.size * 0.5).max_element() <= 0.0
+    }
+
+    pub fn reaches(&self, feet: Vec3, height: f32) -> bool {
+        let y = self.center.y.clamp(feet.y, feet.y + height);
+        self.contains(Vec3::new(feet.x, y, feet.z))
+    }
+
+    pub fn stands_on_top(&self, feet: Vec3) -> bool {
+        let top = self.center.y + self.size.y * 0.5;
+        (feet.y - top).abs() <= STAND_ON_TOP_TOLERANCE
+            && self.contains(Vec3::new(feet.x, top, feet.z))
     }
 }
 
@@ -36,6 +48,8 @@ pub struct MachineSpawn {
     pub spawn_point: Vec3,
     pub spawn_interval_seconds: f32,
     pub max_alive: usize,
+    #[serde(default)]
+    pub say: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,6 +67,7 @@ pub struct Arena {
     pub machine_enemy_ids: Vec<u32>,
     pub machine_target_id: Option<u32>,
     pub machine_timer_seconds: f32,
+    pub machine_announced: bool,
 }
 
 impl Arena {
@@ -65,6 +80,7 @@ impl Arena {
                 machine_enemy_ids: Vec::new(),
                 machine_target_id: None,
                 machine_timer_seconds: 0.0,
+                machine_announced: false,
             })
             .collect()
     }
@@ -80,7 +96,10 @@ impl Game {
     }
 
     pub(crate) fn rebuild_collision(&mut self) {
-        self.collision = CollisionWorld::new(&self.level, self.closed_doors());
+        self.collision = CollisionWorld::new(
+            &self.level,
+            self.closed_doors().chain(self.script_blockers()),
+        );
     }
 
     pub(crate) fn update_arenas(&mut self) {
@@ -158,16 +177,26 @@ impl Game {
             }
         }
 
-        let arena = &self.arenas[index];
-        if !arena.wave_enemy_ids.is_empty() {
+        if !self.arenas[index].wave_enemy_ids.is_empty() {
             return false;
         }
-        let next_wave = arena.wave + 1;
+        let last_wave = self.arenas[index].wave + 1 >= spawn.waves.len();
+        if last_wave && machine_alive && !self.arenas[index].machine_announced {
+            if let Some(say) = spawn
+                .machine
+                .as_ref()
+                .and_then(|machine| machine.say.clone())
+            {
+                self.events.push(GameEvent::Say { key: say });
+            }
+            self.arenas[index].machine_announced = true;
+        }
+        let next_wave = self.arenas[index].wave + 1;
         if next_wave < spawn.waves.len() {
             self.start_wave(index, spawn, next_wave);
             return false;
         }
-        if machine_alive || !arena.machine_enemy_ids.is_empty() {
+        if machine_alive || !self.arenas[index].machine_enemy_ids.is_empty() {
             return false;
         }
         self.arenas[index].phase = ArenaPhase::Cleared;
@@ -175,7 +204,7 @@ impl Game {
         true
     }
 
-    fn spawn_enemy(&mut self, position: Vec3) -> u32 {
+    pub(crate) fn spawn_enemy(&mut self, position: Vec3) -> u32 {
         let id = self.next_enemy_id;
         self.next_enemy_id += 1;
         self.enemies

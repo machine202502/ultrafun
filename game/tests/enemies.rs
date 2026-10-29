@@ -80,6 +80,7 @@ fn two_shots_kill_grunt_and_drop_parts() {
         },
         0.4,
     );
+
     assert!(game.enemies.is_empty());
     assert_eq!(game.parts.len(), 4);
     assert!(
@@ -142,4 +143,50 @@ fn grunts_do_not_overlap() {
     run(&mut game, Actions::default(), 0.5);
     let distance = flat_distance(game.enemies[0].position, game.enemies[1].position);
     assert!(distance >= 0.99, "distance {distance}");
+}
+#[test]
+fn grunt_below_a_platform_cannot_hit_through_the_floor() {
+    let platform = solid(Vec3::new(0.0, 7.75, 0.0), Vec3::new(6.0, 0.5, 6.0));
+    let mut game = game_with_enemies(
+        vec![platform],
+        vec![Vec3::new(0.0, 0.0, 0.0)],
+        Vec3::new(0.0, 8.0, 0.0),
+    );
+    run(&mut game, Actions::default(), 2.0);
+    assert_eq!(game.player.health, 100.0);
+}
+
+#[test]
+fn grunt_cannot_hit_through_a_wall() {
+    let wall = solid(Vec3::new(0.0, 1.5, -1.0), Vec3::new(20.0, 3.0, 0.4));
+    let mut game = game_with_enemies(vec![wall], vec![Vec3::new(0.0, 0.0, -2.5)], Vec3::ZERO);
+    run(&mut game, Actions::default(), 1.5);
+    assert_eq!(game.player.health, 100.0);
+}
+
+#[test]
+fn grunt_still_hits_what_it_can_see() {
+    let mut game = game_with_enemies(Vec::new(), vec![Vec3::new(0.0, 0.0, -1.5)], Vec3::ZERO);
+    run(&mut game, Actions::default(), 0.6);
+    assert!(game.player.health < 100.0, "health {}", game.player.health);
+}
+#[test]
+fn shooting_an_enemy_pushes_it_back() {
+    let mut game = game_with_enemies(Vec::new(), vec![Vec3::new(0.0, 0.0, -3.0)], Vec3::ZERO);
+    game.player.pitch = -0.2;
+    let fire = Actions {
+        fire_held: true,
+        ..Actions::default()
+    };
+    game.update(&fire);
+
+    let pushed = game.enemies[0].knockback.length();
+    assert!(pushed > 1.0, "knockback {pushed}");
+    let before = game.enemies[0].position.z;
+    run(&mut game, Actions::default(), 0.2);
+    assert!(
+        game.enemies[0].position.z < before,
+        "enemy did not move back: before {before}, after {}",
+        game.enemies[0].position.z
+    );
 }

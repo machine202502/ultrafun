@@ -8,8 +8,11 @@ use kira::sound::static_sound::StaticSoundData;
 use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend};
 
 const AUDIO_DIRECTORY: &str = "assets/audio";
-const SOUND_NAMES: [&str; 12] = [
-    "shot",
+const SHOT_NAMES: [&str; 3] = ["shot_1", "shot_3", "shot_5"];
+const SOUND_NAMES: [&str; 14] = [
+    "shot_1",
+    "shot_3",
+    "shot_5",
     "impact",
     "enemy_hit",
     "enemy_killed",
@@ -28,6 +31,8 @@ const QUIETEST_DECIBELS: f32 = -30.0;
 pub struct Audio {
     manager: AudioManager,
     sounds: HashMap<&'static str, StaticSoundData>,
+    shot_seed: u32,
+    last_shot: usize,
 }
 
 impl Audio {
@@ -43,12 +48,17 @@ impl Audio {
                 Ok((*name, sound))
             })
             .collect::<Result<_>>()?;
-        Ok(Self { manager, sounds })
+        Ok(Self {
+            manager,
+            sounds,
+            shot_seed: 0x9e37_79b9,
+            last_shot: usize::MAX,
+        })
     }
 
     pub fn handle(&mut self, event: &GameEvent, listener: Vec3, master_decibels: f32) {
         let (name, source) = match event {
-            GameEvent::ShotFired { .. } => ("shot", None),
+            GameEvent::ShotFired { .. } => (self.next_shot(), None),
             GameEvent::ShotImpact { position, .. } => ("impact", Some(*position)),
             GameEvent::EnemyHit { .. } => ("enemy_hit", None),
             GameEvent::EnemyKilled { position, .. } => ("enemy_killed", Some(*position)),
@@ -67,6 +77,16 @@ impl Audio {
         self.play(name, master_decibels + falloff);
     }
 
+    fn next_shot(&mut self) -> &'static str {
+        self.shot_seed = self
+            .shot_seed
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        let (name, index) = shot_variant(self.shot_seed, self.last_shot);
+        self.last_shot = index;
+        name
+    }
+
     pub fn play_radio(&mut self, master_decibels: f32) {
         self.play("radio", master_decibels);
     }
@@ -79,6 +99,14 @@ impl Audio {
             log::warn!("cannot play {name}: {error}");
         }
     }
+}
+
+pub fn shot_variant(seed: u32, last: usize) -> (&'static str, usize) {
+    let mut index = ((seed >> 16) as usize) % SHOT_NAMES.len();
+    if SHOT_NAMES.len() > 1 && index == last {
+        index = (index + 1 + ((seed >> 8) as usize) % (SHOT_NAMES.len() - 1)) % SHOT_NAMES.len();
+    }
+    (SHOT_NAMES[index], index)
 }
 
 pub fn distance_falloff_decibels(distance: f32) -> f32 {
@@ -103,6 +131,29 @@ mod tests {
                 .join(AUDIO_DIRECTORY)
                 .join(format!("{name}.wav"));
             assert!(path.exists(), "missing {}", path.display());
+        }
+    }
+}
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+
+    #[test]
+    fn shots_use_every_variant_without_repeating() {
+        let mut seed = 1u32;
+        let mut last = usize::MAX;
+        let mut seen = Vec::new();
+        for _ in 0..200 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let (name, index) = shot_variant(seed, last);
+            if last != usize::MAX {
+                assert_ne!(index, last, "two identical shots in a row");
+            }
+            last = index;
+            seen.push(name);
+        }
+        for name in SHOT_NAMES {
+            assert!(seen.contains(&name), "variant {name} never plays");
         }
     }
 }

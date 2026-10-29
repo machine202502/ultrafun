@@ -26,7 +26,7 @@ pub struct GruntConfig {
 }
 
 impl GruntConfig {
-    fn body(&self) -> Body {
+    pub(crate) fn body(&self) -> Body {
         Body::new(
             self.height,
             self.radius,
@@ -43,6 +43,8 @@ pub enum AttackState {
     Recover { remaining_seconds: f32 },
 }
 
+const KNOCKBACK_DECAY: f32 = 11.0;
+
 #[derive(Debug, Clone)]
 pub struct Enemy {
     pub id: u32,
@@ -52,6 +54,7 @@ pub struct Enemy {
     pub grounded: bool,
     pub health: f32,
     pub attack: AttackState,
+    pub knockback: Vec3,
 }
 
 impl Enemy {
@@ -65,6 +68,7 @@ impl Enemy {
             grounded: false,
             health: config.max_health,
             attack: AttackState::Ready,
+            knockback: Vec3::ZERO,
         }
     }
 
@@ -105,18 +109,33 @@ pub fn update_enemies(
         let to_player = player.position - enemy.position;
         let flat_to_player = Vec3::new(to_player.x, 0.0, to_player.z);
         let distance = flat_to_player.length();
+        let reach = (distance * distance + to_player.y * to_player.y).sqrt();
+        let sees_player = world.line_of_sight(
+            chest(enemy.position, config),
+            chest(player.position, config),
+        );
 
-        enemy.attack = next_attack_state(enemy.attack, distance, player, config, events, dt);
+        enemy.attack =
+            next_attack_state(enemy.attack, reach, sees_player, player, config, events, dt);
 
         let chasing = !matches!(enemy.attack, AttackState::Windup { .. })
             && distance > config.attack_range * 0.75;
+        let stagger = if enemy.knockback.length() > 1.0 {
+            1.0
+        } else {
+            0.0
+        };
         let flat_velocity = if chasing {
-            flat_to_player.normalize_or_zero() * config.run_speed
+            flat_to_player.normalize_or_zero() * config.run_speed * (1.0 - stagger)
         } else {
             Vec3::ZERO
         };
         let fall = (enemy.velocity.y - config.gravity * dt).max(-config.max_fall_speed);
-        enemy.velocity = flat_velocity + Vec3::Y * fall;
+        enemy.knockback *= (-dt * KNOCKBACK_DECAY).exp();
+        if enemy.knockback.length_squared() < 0.01 {
+            enemy.knockback = Vec3::ZERO;
+        }
+        enemy.velocity = flat_velocity + enemy.knockback + Vec3::Y * fall;
 
         let state = BodyState {
             position: &mut enemy.position,
@@ -130,14 +149,15 @@ pub fn update_enemies(
 
 fn next_attack_state(
     attack: AttackState,
-    distance: f32,
+    reach: f32,
+    sees_player: bool,
     player: &mut Player,
     config: &GruntConfig,
     events: &mut Vec<GameEvent>,
     dt: f32,
 ) -> AttackState {
     match attack {
-        AttackState::Ready if distance <= config.attack_range => AttackState::Windup {
+        AttackState::Ready if sees_player && reach <= config.attack_range => AttackState::Windup {
             remaining_seconds: config.windup_seconds,
         },
         AttackState::Ready => AttackState::Ready,
@@ -147,7 +167,7 @@ fn next_attack_state(
             }
         }
         AttackState::Windup { .. } => {
-            if distance <= config.attack_range + config.attack_reach_leeway {
+            if sees_player && reach <= config.attack_range + config.attack_reach_leeway {
                 damage_player(player, config.damage, events);
             }
             AttackState::Recover {
@@ -161,6 +181,10 @@ fn next_attack_state(
         }
         AttackState::Recover { .. } => AttackState::Ready,
     }
+}
+
+fn chest(feet: Vec3, config: &GruntConfig) -> Vec3 {
+    feet + Vec3::Y * config.height * 0.5
 }
 
 fn damage_player(player: &mut Player, amount: f32, events: &mut Vec<GameEvent>) {

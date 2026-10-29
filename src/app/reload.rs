@@ -86,11 +86,32 @@ impl App {
 
     pub(super) fn switch_level(&mut self) {
         let next = next_level(&self.level_name);
-        let previous = std::mem::replace(&mut self.level_name, next.to_owned());
+        self.load_named_level(next);
+    }
+
+    pub(super) fn start_level(&mut self, name: &str) {
+        self.level_name = name.to_owned();
+        if let Err(error) = self.reload_level() {
+            log::error!("{error:#}");
+        }
+    }
+
+    pub(super) fn load_named_level(&mut self, name: &str) {
+        if self.level_name == name {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.level_name, name.to_owned());
         if let Err(error) = self.reload_level() {
             log::error!("{error:#}");
             self.level_name = previous;
         }
+    }
+
+    pub(super) fn go_to_next_level(&mut self) {
+        let Some(next) = self.game.level().next_level.clone() else {
+            return;
+        };
+        self.load_named_level(&next);
     }
 
     pub(super) fn save_lighting(&mut self) {

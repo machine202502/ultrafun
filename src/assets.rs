@@ -63,7 +63,19 @@ mod tests {
 
     #[test]
     fn shipped_data_files_parse() {
-        load_ron::<game::Level>(&data_path("test_room.ron")).unwrap();
+        let room: game::Level = load_ron(&data_path("test_room.ron")).unwrap();
+        assert_eq!(room.hazards.len(), 1);
+        assert_eq!(room.pads.len(), 1);
+        assert_eq!(room.belts.len(), 1);
+        assert_eq!(room.crushers.len(), 1);
+        assert_eq!(room.tubes.len(), 1);
+        assert_eq!(room.doors.len(), 1);
+        assert_eq!(room.keys.len(), 1);
+        assert_eq!(room.breakables.len(), 1);
+        assert_eq!(room.switches.len(), 1);
+        assert_eq!(room.triggers.len(), 2);
+        assert_eq!(room.spawns.len(), 1);
+        assert_eq!(room.checkpoints.len(), 1);
         load_ron::<crate::render::RoomAtmosphere>(&data_path("test_room.ron")).unwrap();
         let room_lights: crate::render::RoomLights = load_ron(&data_path("test_room.ron")).unwrap();
         assert_eq!(room_lights.lights.len(), 3);

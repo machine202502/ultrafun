@@ -2,6 +2,8 @@ use glam::Vec3;
 use serde::Deserialize;
 
 use crate::collision::SKIN;
+use crate::hazards::{BeltSpawn, CrusherSpawn, HazardSpawn, PadSpawn, TubeSpawn};
+use crate::script::{BreakableSpawn, DoorSpawn, KeySpawn, SpawnGroup, SwitchSpawn, TriggerSpawn};
 use crate::{ArenaSpawn, Zone};
 use crate::{MovementConfig, Player};
 
@@ -17,6 +19,32 @@ pub struct Level {
     pub enemies: Vec<EnemySpawn>,
     #[serde(default)]
     pub arenas: Vec<ArenaSpawn>,
+    #[serde(default)]
+    pub hazards: Vec<HazardSpawn>,
+    #[serde(default)]
+    pub pads: Vec<PadSpawn>,
+    #[serde(default)]
+    pub belts: Vec<BeltSpawn>,
+    #[serde(default)]
+    pub crushers: Vec<CrusherSpawn>,
+    #[serde(default)]
+    pub tubes: Vec<TubeSpawn>,
+    #[serde(default)]
+    pub doors: Vec<DoorSpawn>,
+    #[serde(default)]
+    pub keys: Vec<KeySpawn>,
+    #[serde(default)]
+    pub breakables: Vec<BreakableSpawn>,
+    #[serde(default)]
+    pub switches: Vec<SwitchSpawn>,
+    #[serde(default)]
+    pub triggers: Vec<TriggerSpawn>,
+    #[serde(default)]
+    pub spawns: Vec<SpawnGroup>,
+    #[serde(default)]
+    pub checkpoints: Vec<Zone>,
+    #[serde(default)]
+    pub next_level: Option<String>,
     #[serde(default)]
     pub exit: Option<Zone>,
 }

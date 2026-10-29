@@ -96,6 +96,7 @@ fn machine_spawns_up_to_limit_until_destroyed() {
         spawn_point: Vec3::new(0.0, 0.0, -37.0),
         spawn_interval_seconds: 1.0,
         max_alive: 2,
+        say: None,
     };
     let mut game = started(arena_with(Vec::new(), Some(machine)));
     run(&mut game, Actions::default(), 3.5);

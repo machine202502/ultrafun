@@ -79,22 +79,47 @@ pub fn game_with_enemies(boxes: Vec<LevelBox>, enemies: Vec<Vec3>, spawn: Vec3) 
 }
 
 pub fn game_with_level(
-    mut boxes: Vec<LevelBox>,
+    boxes: Vec<LevelBox>,
     targets: Vec<TargetSpawn>,
     enemies: Vec<EnemySpawn>,
     spawn: Vec3,
 ) -> Game {
+    let mut level = level_with_floor(boxes, spawn);
+    level.targets = targets;
+    level.enemies = enemies;
+    Game::new(level, game_config())
+}
+
+pub fn game_with_environment(spawn: Vec3, edit: impl FnOnce(&mut Level)) -> Game {
+    let mut level = level_with_floor(Vec::new(), spawn);
+    edit(&mut level);
+    Game::new(level, game_config())
+}
+
+fn level_with_floor(mut boxes: Vec<LevelBox>, spawn: Vec3) -> Level {
     boxes.push(floor());
-    let level = Level {
+    Level {
         spawn_position: spawn,
         spawn_yaw_degrees: 0.0,
         boxes,
-        targets,
-        enemies,
+        targets: Vec::new(),
+        enemies: Vec::new(),
         arenas: Vec::new(),
+        hazards: Vec::new(),
+        pads: Vec::new(),
+        belts: Vec::new(),
+        crushers: Vec::new(),
+        tubes: Vec::new(),
+        doors: Vec::new(),
+        keys: Vec::new(),
+        breakables: Vec::new(),
+        switches: Vec::new(),
+        triggers: Vec::new(),
+        spawns: Vec::new(),
+        checkpoints: Vec::new(),
+        next_level: None,
         exit: None,
-    };
-    Game::new(level, game_config())
+    }
 }
 
 pub fn game_config() -> GameConfig {

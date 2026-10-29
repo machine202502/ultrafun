@@ -2,7 +2,6 @@ mod frame;
 mod reload;
 mod screenshot;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -57,6 +56,11 @@ pub struct App {
     lab: LightingLab,
     screenshots: Option<ScreenshotRun>,
     exit_requested: bool,
+    menu: crate::menu::Menu,
+    pause: crate::menu::PauseMenu,
+    pending_menu: Option<crate::menu::MenuAction>,
+    pending_pause: Option<crate::menu::PauseAction>,
+    cursor_logical: Option<egui::Pos2>,
     window_state: Option<WindowState>,
 }
 
@@ -67,18 +71,29 @@ struct WindowState {
 }
 
 impl App {
-    pub fn new(screenshot_output: Option<PathBuf>) -> Result<Self> {
+    pub fn new(screenshots: Option<crate::screenshots::ScreenshotArgs>) -> Result<Self> {
         let data = DataFiles::open(DATA_DIRECTORY)?;
         let levels = DataFiles::open(LEVELS_DIRECTORY)?;
         let settings: Settings = data.load(SETTINGS_FILE)?;
-        let shot_list = screenshot_output
+        let shot_list = screenshots
             .as_ref()
             .map(|_| ScreenshotRun::load_shot_list())
             .transpose()?;
-        let level_name = shot_list
-            .as_ref()
-            .map_or_else(|| settings.level.clone(), |list| list.level.clone());
+        let level_name = shot_list.as_ref().map_or_else(
+            || settings.level.clone(),
+            |list| {
+                list.levels
+                    .first()
+                    .map_or_else(|| settings.level.clone(), |level| level.level.clone())
+            },
+        );
         let texts = Texts::load(&settings.language)?;
+        let menu = crate::menu::Menu::new(
+            &crate::levels::SWITCHABLE_LEVELS,
+            &texts,
+            screenshots.is_none(),
+        );
+        let pause = crate::menu::PauseMenu::new(&texts);
         let lighting: LightingFile = data.load(LIGHTING_FILE)?;
         anyhow::ensure!(
             !lighting.presets.is_empty(),
@@ -114,13 +129,37 @@ impl App {
                 .inspect_err(|error| log::warn!("playing without sound: {error:#}"))
                 .ok(),
             texts,
-            screenshots: screenshot_output
+            screenshots: screenshots
                 .zip(shot_list)
-                .map(|(output, list)| {
-                    ScreenshotRun::new(output, list.shots, lighting.presets.len())
+                .map(|(arguments, list)| {
+                    let presets: Vec<usize> = lighting
+                        .presets
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, preset)| {
+                            arguments
+                                .preset
+                                .as_ref()
+                                .is_none_or(|name| preset.name == *name)
+                        })
+                        .map(|(index, _)| index)
+                        .collect();
+                    anyhow::ensure!(
+                        !presets.is_empty(),
+                        "no lighting preset named {:?}",
+                        arguments.preset
+                    );
+                    let list = list.filtered(arguments.level.as_deref(), arguments.shot.as_deref());
+                    anyhow::ensure!(!list.levels.is_empty(), "no shots match the filters");
+                    ScreenshotRun::new(arguments.output, list.levels, presets)
                 })
                 .transpose()?,
             exit_requested: false,
+            menu,
+            pause,
+            pending_menu: None,
+            pending_pause: None,
+            cursor_logical: None,
             lab: LightingLab::new(lighting),
             window_state: None,
         })
@@ -154,8 +193,52 @@ impl App {
     }
 
     fn key_pressed(&mut self, key: KeyCode) {
+        if self.menu.visible {
+            match key {
+                KeyCode::ArrowUp | KeyCode::KeyW => {
+                    self.menu.move_selection(-1);
+                    return;
+                }
+                KeyCode::ArrowDown | KeyCode::KeyS => {
+                    self.menu.move_selection(1);
+                    return;
+                }
+                KeyCode::Enter | KeyCode::Space => {
+                    self.pending_menu = self.menu.activate();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.pause.visible {
+            match key {
+                KeyCode::ArrowUp | KeyCode::KeyW => {
+                    self.pause.move_selection(-1);
+                    return;
+                }
+                KeyCode::ArrowDown | KeyCode::KeyS => {
+                    self.pause.move_selection(1);
+                    return;
+                }
+                KeyCode::Enter | KeyCode::Space => {
+                    self.pending_pause = self.pause.activate();
+                    return;
+                }
+                _ => {}
+            }
+        }
         match key {
-            KeyCode::Escape => self.set_mouse_captured(false),
+            KeyCode::Enter if self.game.result.is_some() => self.go_to_next_level(),
+            KeyCode::Escape => {
+                if self.menu.visible {
+                    return;
+                }
+                self.pause.visible = !self.pause.visible;
+                self.set_mouse_captured(!self.pause.visible);
+                if self.pause.visible {
+                    self.warp_cursor_to_center();
+                }
+            }
             KeyCode::F1 => {
                 if let Some(state) = &mut self.window_state {
                     state.overlay.debug_visible = !state.overlay.debug_visible;
@@ -178,6 +261,21 @@ impl App {
                 }
             }
             _ => self.input.key_pressed(key, &self.settings.keys),
+        }
+    }
+
+    fn warp_cursor_to_center(&mut self) {
+        let Some(state) = &self.window_state else {
+            return;
+        };
+        let scale = state.window.scale_factor();
+        let size = state.window.inner_size();
+        let center = winit::dpi::LogicalPosition::new(
+            size.width as f64 / scale / 2.0,
+            size.height as f64 / scale / 2.0,
+        );
+        if let Err(error) = state.window.set_cursor_position(center) {
+            log::warn!("cannot warp cursor: {error}");
         }
     }
 
@@ -217,9 +315,11 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         if let Some(state) = &mut self.window_state {
-            state
-                .overlay
-                .on_window_event(&state.window, &event, self.lab.visible);
+            state.overlay.on_window_event(
+                &state.window,
+                &event,
+                self.lab.visible || self.menu.visible,
+            );
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -232,12 +332,49 @@ impl ApplicationHandler for App {
                 self.input.release_all();
                 self.set_mouse_captured(false);
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = self
+                    .window_state
+                    .as_ref()
+                    .map_or(1.0, |state| state.window.scale_factor() as f32);
+                self.cursor_logical = Some(egui::pos2(
+                    position.x as f32 / scale,
+                    position.y as f32 / scale,
+                ));
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } if state == ElementState::Pressed
+                && !self.mouse_captured
+                && (self.menu.visible || self.pause.visible) =>
+            {
+                if let (Some(cursor), Some(window_state)) =
+                    (self.cursor_logical, &self.window_state)
+                {
+                    let scale = window_state.window.scale_factor() as f32;
+                    let size = window_state.window.inner_size();
+                    let screen = egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(size.width as f32 / scale, size.height as f32 / scale),
+                    );
+                    if self.menu.visible {
+                        if let Some(action) = self.menu.hit_test(cursor, screen) {
+                            self.pending_menu = Some(action);
+                        }
+                    } else if let Some(action) = self.pause.hit_test(cursor, screen) {
+                        self.pending_pause = Some(action);
+                    }
+                }
+            }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
             } => match (state, self.mouse_captured) {
-                (ElementState::Pressed, false) if self.lab.visible => {}
+                (ElementState::Pressed, false)
+                    if self.lab.visible || self.menu.visible || self.pause.visible => {}
                 (ElementState::Pressed, false) => self.set_mouse_captured(true),
                 (ElementState::Pressed, true) => self.input.set_fire_held(true),
                 (ElementState::Released, _) => self.input.set_fire_held(false),

@@ -14,7 +14,6 @@ game = { path = "game" }
 glam = { version = "0.33.12", features = ["bytemuck", "serde"] }
 parry3d = "0.31.1"
 serde = { version = "1.0.229", features = ["derive"] }
-rand = "0.10.3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::TargetSpawn;
 use crate::collision::CollisionWorld;
 use crate::enemy::{Enemy, GruntConfig};
+use crate::script::Switch;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WeaponConfig {
@@ -61,6 +62,7 @@ pub enum ShotHit {
     Nothing,
     Wall { distance: f32, normal: Vec3 },
     Target { index: usize, distance: f32 },
+    Switch { index: usize, distance: f32 },
     Enemy { index: usize, distance: f32 },
 }
 
@@ -70,9 +72,17 @@ impl ShotHit {
             ShotHit::Nothing => range,
             ShotHit::Wall { distance, .. }
             | ShotHit::Target { distance, .. }
+            | ShotHit::Switch { distance, .. }
             | ShotHit::Enemy { distance, .. } => *distance,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum HitKind {
+    Target(usize),
+    Switch(usize),
+    Enemy(usize),
 }
 
 pub fn trace_shot(
@@ -80,31 +90,34 @@ pub fn trace_shot(
     range: f32,
     world: &CollisionWorld,
     targets: &[Target],
+    switches: &[Switch],
     enemies: &[Enemy],
     grunt: &GruntConfig,
 ) -> ShotHit {
     let wall = world.ray(ray, range);
     let limit = wall.map_or(range, |(distance, _)| distance);
-    let target = nearest(targets.iter().map(|target| target.ray_distance(ray, limit)));
-    let enemy = nearest(
-        enemies
-            .iter()
-            .map(|enemy| enemy.ray_distance(ray, limit, grunt)),
-    );
-    match (target, enemy, wall) {
-        (Some((index, distance)), Some((_, enemy_distance)), _) if distance <= enemy_distance => {
-            ShotHit::Target { index, distance }
-        }
-        (_, Some((index, distance)), _) => ShotHit::Enemy { index, distance },
-        (Some((index, distance)), None, _) => ShotHit::Target { index, distance },
-        (None, None, Some((distance, normal))) => ShotHit::Wall { distance, normal },
-        (None, None, None) => ShotHit::Nothing,
-    }
-}
-
-fn nearest(distances: impl Iterator<Item = Option<f32>>) -> Option<(usize, f32)> {
-    distances
+    let hits = targets
+        .iter()
         .enumerate()
-        .filter_map(|(index, distance)| Some((index, distance?)))
-        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .filter_map(|(index, target)| {
+            Some((HitKind::Target(index), target.ray_distance(ray, limit)?))
+        })
+        .chain(switches.iter().enumerate().filter_map(|(index, switch)| {
+            Some((HitKind::Switch(index), switch.ray_distance(ray, limit)?))
+        }))
+        .chain(enemies.iter().enumerate().filter_map(|(index, enemy)| {
+            Some((
+                HitKind::Enemy(index),
+                enemy.ray_distance(ray, limit, grunt)?,
+            ))
+        }));
+    match hits.min_by(|(_, a), (_, b)| a.total_cmp(b)) {
+        Some((HitKind::Target(index), distance)) => ShotHit::Target { index, distance },
+        Some((HitKind::Switch(index), distance)) => ShotHit::Switch { index, distance },
+        Some((HitKind::Enemy(index), distance)) => ShotHit::Enemy { index, distance },
+        None => match wall {
+            Some((distance, normal)) => ShotHit::Wall { distance, normal },
+            None => ShotHit::Nothing,
+        },
+    }
 }

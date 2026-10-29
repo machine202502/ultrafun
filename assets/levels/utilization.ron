@@ -11,6 +11,7 @@
     target_health: 3.0,
     light_scale: 0.0006,
     default_light_range: 14.0,
+    next_level: Some("foundry"),
     arenas: [(
         trigger: "arena_hall_trigger",
         doors: ["arena_hall_door"],

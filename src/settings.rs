@@ -29,6 +29,7 @@ pub struct KeyBindings {
     pub dash: KeyCode,
     pub slide: KeyCode,
     pub respawn: KeyCode,
+    pub cheats: KeyCode,
 }
 
 impl Settings {

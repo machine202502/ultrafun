@@ -3,7 +3,11 @@ mod scene;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use game::{ArenaSpawn, EnemySpawn, Level, LevelBox, MachineSpawn, TargetSpawn, Zone};
+use game::{
+    ArenaSpawn, BeltSpawn, BreakableSpawn, CrusherSpawn, DEFAULT_HAZARD_DAMAGE_PER_SECOND,
+    DoorSpawn, EnemySpawn, HazardSpawn, KeySpawn, Level, LevelBox, MachineSpawn, PadSpawn,
+    ScriptAction, SpawnGroup, SwitchSpawn, TargetSpawn, TriggerSpawn, TubeSpawn, Zone,
+};
 use glam::{EulerRot, Quat, Vec3};
 use serde::Deserialize;
 
@@ -16,6 +20,24 @@ const ENEMY: &str = "enemy";
 const TARGET: &str = "target";
 const EXIT: &str = "exit";
 const ARENA_PREFIX: &str = "arena_";
+const HAZARD_PREFIX: &str = "hazard_";
+const DOOR_PREFIX: &str = "door_";
+const KEY_PREFIX: &str = "key_";
+const BREAKABLE_PREFIX: &str = "breakable_";
+const SWITCH_PREFIX: &str = "switch_";
+const NON_SOLID_PREFIXES: [&str; 11] = [
+    ARENA_PREFIX,
+    HAZARD_PREFIX,
+    "pad_",
+    "crusher_",
+    "tube_",
+    "door_",
+    "key_",
+    "breakable_",
+    "switch_",
+    "trigger_",
+    "checkpoint_",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BlenderLevelFile {
@@ -26,6 +48,26 @@ pub struct BlenderLevelFile {
     pub default_light_range: f32,
     #[serde(default)]
     pub arenas: Vec<ArenaRules>,
+    #[serde(default)]
+    pub hazards: Vec<HazardRules>,
+    #[serde(default)]
+    pub pads: Vec<PadRules>,
+    #[serde(default)]
+    pub belts: Vec<BeltRules>,
+    #[serde(default)]
+    pub crushers: Vec<CrusherRules>,
+    #[serde(default)]
+    pub tubes: Vec<TubeRules>,
+    #[serde(default)]
+    pub switches: Vec<SwitchRules>,
+    #[serde(default)]
+    pub breakables: Vec<BreakableRules>,
+    #[serde(default)]
+    pub triggers: Vec<TriggerRules>,
+    #[serde(default)]
+    pub checkpoints: Vec<String>,
+    #[serde(default)]
+    pub next_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +87,62 @@ pub struct MachineRules {
     pub health: f32,
     pub spawn_interval_seconds: f32,
     pub max_alive: usize,
+    #[serde(default)]
+    pub say: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HazardRules {
+    pub object: String,
+    pub damage_per_second: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PadRules {
+    pub object: String,
+    pub launch_speed: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BeltRules {
+    pub object: String,
+    pub velocity: Vec3,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrusherRules {
+    pub object: String,
+    pub travel: f32,
+    pub period_seconds: f32,
+    pub offset_seconds: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TubeRules {
+    pub object: String,
+    pub exit_speed: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SwitchRules {
+    pub object: String,
+    pub health: f32,
+    pub actions: Vec<ScriptAction>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BreakableRules {
+    pub group: String,
+    #[serde(default)]
+    pub by_slam: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TriggerRules {
+    pub zone: String,
+    #[serde(default)]
+    pub requires_key: Option<String>,
+    pub actions: Vec<ScriptAction>,
 }
 
 pub fn load_blender_level(
@@ -87,7 +185,11 @@ pub fn build_level(objects: &SceneObjects, file: &BlenderLevelFile) -> Result<Le
         .cubes
         .iter()
         .filter(|(name, _)| {
-            !name.starts_with(ARENA_PREFIX) && name.as_str() != TARGET && name.as_str() != EXIT
+            !NON_SOLID_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+                && name.as_str() != TARGET
+                && name.as_str() != EXIT
         })
         .flat_map(|(_, cubes)| cubes)
         .map(level_box)
@@ -111,6 +213,22 @@ pub fn build_level(objects: &SceneObjects, file: &BlenderLevelFile) -> Result<Le
         .iter()
         .map(|rules| build_arena(objects, rules))
         .collect::<Result<_>>()?;
+    let hazards = build_hazards(objects, &file.hazards)?;
+    let doors = build_doors(objects)?;
+    let keys = build_keys(objects)?;
+    let breakables = build_breakables(objects, &file.breakables)?;
+    let switches = build_switches(objects, &file.switches)?;
+    let triggers = build_triggers(objects, &file.triggers)?;
+    let spawns = build_spawns(objects, &triggers, &switches)?;
+    ensure_known_script_names(
+        &doors,
+        &breakables,
+        &hazards,
+        &switches,
+        &triggers,
+        &spawns,
+        &file.breakables,
+    )?;
     Ok(Level {
         spawn_position: start.position,
         spawn_yaw_degrees: facing_yaw_degrees(start.rotation),
@@ -118,8 +236,292 @@ pub fn build_level(objects: &SceneObjects, file: &BlenderLevelFile) -> Result<Le
         targets,
         enemies,
         arenas,
+        hazards,
+        pads: build_pads(objects, &file.pads)?,
+        belts: build_belts(objects, &file.belts)?,
+        crushers: build_crushers(objects, &file.crushers)?,
+        tubes: build_tubes(objects, &file.tubes)?,
+        doors,
+        keys,
+        breakables,
+        switches,
+        triggers,
+        spawns,
+        checkpoints: build_checkpoints(objects, &file.checkpoints)?,
+        next_level: file.next_level.clone(),
         exit: cubes(objects, EXIT).first().map(zone),
     })
+}
+
+fn prefixed<'a>(objects: &'a SceneObjects, prefix: &str) -> Vec<(&'a str, &'a [SceneCube])> {
+    let mut groups: Vec<_> = objects
+        .cubes
+        .iter()
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(name, cubes)| (name.as_str(), cubes.as_slice()))
+        .collect();
+    groups.sort_by_key(|(name, _)| *name);
+    groups
+}
+
+fn stripped<'a>(name: &'a str, prefix: &str) -> &'a str {
+    name.strip_prefix(prefix).unwrap_or(name)
+}
+
+fn group_zones(name: &str, cubes: &[SceneCube]) -> Result<Vec<Zone>> {
+    let mut zones = Vec::new();
+    for cube in cubes {
+        ensure_upright(cube, name)?;
+        zones.push(zone(cube));
+    }
+    Ok(zones)
+}
+
+fn build_doors(objects: &SceneObjects) -> Result<Vec<DoorSpawn>> {
+    let mut doors = Vec::new();
+    for (name, cubes) in prefixed(objects, DOOR_PREFIX) {
+        doors.push(DoorSpawn {
+            name: stripped(name, DOOR_PREFIX).to_owned(),
+            zones: group_zones(name, cubes)?,
+            color: cubes[0].color,
+        });
+    }
+    Ok(doors)
+}
+
+fn build_keys(objects: &SceneObjects) -> Result<Vec<KeySpawn>> {
+    let mut keys = Vec::new();
+    for (name, cubes) in prefixed(objects, KEY_PREFIX) {
+        let cube = &cubes[0];
+        ensure_upright(cube, name)?;
+        keys.push(KeySpawn {
+            name: stripped(name, KEY_PREFIX).to_owned(),
+            zone: zone(cube),
+            color: cube.color,
+        });
+    }
+    Ok(keys)
+}
+
+fn build_breakables(
+    objects: &SceneObjects,
+    rules: &[BreakableRules],
+) -> Result<Vec<BreakableSpawn>> {
+    let mut breakables = Vec::new();
+    for (name, cubes) in prefixed(objects, BREAKABLE_PREFIX) {
+        let group = stripped(name, BREAKABLE_PREFIX);
+        let by_slam = rules.iter().any(|rule| rule.group == group && rule.by_slam);
+        breakables.push(BreakableSpawn {
+            name: group.to_owned(),
+            zones: group_zones(name, cubes)?,
+            color: cubes[0].color,
+            by_slam,
+        });
+    }
+    Ok(breakables)
+}
+
+fn build_switches(objects: &SceneObjects, rules: &[SwitchRules]) -> Result<Vec<SwitchSpawn>> {
+    let mut switches = Vec::new();
+    for rule in rules {
+        let cube = single_cube(objects, &rule.object)?;
+        ensure_upright(cube, &rule.object)?;
+        switches.push(SwitchSpawn {
+            name: stripped(&rule.object, SWITCH_PREFIX).to_owned(),
+            zone: zone(cube),
+            color: cube.color,
+            health: rule.health,
+            actions: rule.actions.clone(),
+        });
+    }
+    Ok(switches)
+}
+
+fn build_triggers(objects: &SceneObjects, rules: &[TriggerRules]) -> Result<Vec<TriggerSpawn>> {
+    let mut triggers = Vec::new();
+    for rule in rules {
+        let cube = single_cube(objects, &rule.zone)?;
+        ensure_upright(cube, &rule.zone)?;
+        triggers.push(TriggerSpawn {
+            zone: zone(cube),
+            requires_key: rule.requires_key.clone(),
+            actions: rule.actions.clone(),
+        });
+    }
+    Ok(triggers)
+}
+
+fn build_checkpoints(objects: &SceneObjects, names: &[String]) -> Result<Vec<Zone>> {
+    let mut checkpoints = Vec::new();
+    for name in names {
+        let cube = single_cube(objects, name)?;
+        ensure_upright(cube, name)?;
+        checkpoints.push(zone(cube));
+    }
+    Ok(checkpoints)
+}
+
+fn build_spawns(
+    objects: &SceneObjects,
+    triggers: &[TriggerSpawn],
+    switches: &[SwitchSpawn],
+) -> Result<Vec<SpawnGroup>> {
+    let mut names: Vec<&str> = triggers
+        .iter()
+        .flat_map(|trigger| trigger.actions.iter())
+        .chain(switches.iter().flat_map(|switch| switch.actions.iter()))
+        .filter_map(|action| match action {
+            ScriptAction::Spawn(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|name| {
+            let positions = required_points(objects, name)?
+                .iter()
+                .map(|point| point.position)
+                .collect();
+            Ok(SpawnGroup {
+                name: name.to_owned(),
+                positions,
+            })
+        })
+        .collect()
+}
+
+fn ensure_known_script_names(
+    doors: &[DoorSpawn],
+    breakables: &[BreakableSpawn],
+    hazards: &[HazardSpawn],
+    switches: &[SwitchSpawn],
+    triggers: &[TriggerSpawn],
+    spawns: &[SpawnGroup],
+    breakable_rules: &[BreakableRules],
+) -> Result<()> {
+    for rule in breakable_rules {
+        if !breakables
+            .iter()
+            .any(|breakable| breakable.name == rule.group)
+        {
+            bail!("level has no breakable group named \"{}\"", rule.group);
+        }
+    }
+    let actions = switches
+        .iter()
+        .flat_map(|switch| switch.actions.iter())
+        .chain(triggers.iter().flat_map(|trigger| trigger.actions.iter()));
+    for action in actions {
+        let known = match action {
+            ScriptAction::Open(name) | ScriptAction::Close(name) => {
+                doors.iter().any(|door| door.name == *name)
+            }
+            ScriptAction::Break(name) => breakables.iter().any(|breakable| breakable.name == *name),
+            ScriptAction::DisableHazard(name) => hazards.iter().any(|hazard| hazard.name == *name),
+            ScriptAction::Spawn(name) => spawns.iter().any(|group| group.name == *name),
+            ScriptAction::Say(_) => true,
+        };
+        if !known {
+            bail!("level script refers to an object that does not exist: {action:?}");
+        }
+    }
+    Ok(())
+}
+
+fn build_hazards(objects: &SceneObjects, rules: &[HazardRules]) -> Result<Vec<HazardSpawn>> {
+    let mut hazards = Vec::new();
+    for (name, cubes) in &objects.cubes {
+        let Some(hazard_name) = name.strip_prefix(HAZARD_PREFIX) else {
+            continue;
+        };
+        let damage_per_second = rules
+            .iter()
+            .find(|rule| rule.object == *name)
+            .map_or(DEFAULT_HAZARD_DAMAGE_PER_SECOND, |rule| {
+                rule.damage_per_second
+            });
+        for cube in cubes {
+            ensure_upright(cube, name)?;
+            hazards.push(HazardSpawn {
+                name: hazard_name.to_owned(),
+                zone: zone(cube),
+                color: cube.color,
+                damage_per_second,
+            });
+        }
+    }
+    Ok(hazards)
+}
+
+fn build_pads(objects: &SceneObjects, rules: &[PadRules]) -> Result<Vec<PadSpawn>> {
+    let mut pads = Vec::new();
+    for rule in rules {
+        let cube = single_cube(objects, &rule.object)?;
+        ensure_upright(cube, &rule.object)?;
+        pads.push(PadSpawn {
+            zone: zone(cube),
+            launch_speed: rule.launch_speed,
+        });
+    }
+    Ok(pads)
+}
+
+fn build_belts(objects: &SceneObjects, rules: &[BeltRules]) -> Result<Vec<BeltSpawn>> {
+    let mut belts = Vec::new();
+    for rule in rules {
+        for cube in required_cubes(objects, &rule.object)? {
+            belts.push(BeltSpawn {
+                zone: zone(cube),
+                velocity: rule.velocity,
+            });
+        }
+    }
+    Ok(belts)
+}
+
+fn build_crushers(objects: &SceneObjects, rules: &[CrusherRules]) -> Result<Vec<CrusherSpawn>> {
+    let mut crushers = Vec::new();
+    for rule in rules {
+        let cube = single_cube(objects, &rule.object)?;
+        ensure_upright(cube, &rule.object)?;
+        crushers.push(CrusherSpawn {
+            center: cube.center,
+            size: cube.size,
+            color: cube.color,
+            travel: rule.travel,
+            period_seconds: rule.period_seconds,
+            offset_seconds: rule.offset_seconds,
+        });
+    }
+    Ok(crushers)
+}
+
+fn build_tubes(objects: &SceneObjects, rules: &[TubeRules]) -> Result<Vec<TubeSpawn>> {
+    let mut tubes = Vec::new();
+    for rule in rules {
+        let exit = single_point(objects, &format!("{}_exit", rule.object))?;
+        let exit_yaw_degrees = facing_yaw_degrees(exit.rotation);
+        for cube in required_cubes(objects, &rule.object)? {
+            ensure_upright(cube, &rule.object)?;
+            tubes.push(TubeSpawn {
+                zone: zone(cube),
+                exit: exit.position,
+                exit_yaw_degrees,
+                exit_speed: rule.exit_speed,
+            });
+        }
+    }
+    Ok(tubes)
+}
+
+fn ensure_upright(cube: &SceneCube, name: &str) -> Result<()> {
+    let (x, y, z) = cube.rotation.to_euler(EulerRot::XYZ);
+    if x.abs() > 1e-3 || y.abs() > 1e-3 || z.abs() > 1e-3 {
+        bail!("cube \"{name}\" must not be rotated");
+    }
+    Ok(())
 }
 
 fn build_arena(objects: &SceneObjects, rules: &ArenaRules) -> Result<ArenaSpawn> {
@@ -154,6 +556,7 @@ fn build_arena(objects: &SceneObjects, rules: &ArenaRules) -> Result<ArenaSpawn>
                 spawn_point: single_point(objects, &machine.spawn_point)?.position,
                 spawn_interval_seconds: machine.spawn_interval_seconds,
                 max_alive: machine.max_alive,
+                say: machine.say.clone(),
             })
         })
         .transpose()?;
@@ -211,6 +614,12 @@ fn single_cube<'a>(objects: &'a SceneObjects, name: &str) -> Result<&'a SceneCub
 fn single_point<'a>(objects: &'a SceneObjects, name: &str) -> Result<&'a ScenePoint> {
     Ok(&required_points(objects, name)?[0])
 }
+
+#[cfg(test)]
+mod route_tests;
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(test)]
 mod tests;

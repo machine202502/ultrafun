@@ -228,12 +228,25 @@ pub fn create_vertex_buffer(
     label: &str,
     vertices: &[Vertex],
 ) -> (wgpu::Buffer, u32) {
+    let (contents, count) = vertex_bytes(vertices);
     let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
-        contents: bytemuck::cast_slice(vertices),
+        contents: &contents,
         usage: wgpu::BufferUsages::VERTEX,
     });
-    (buffer, vertices.len() as u32)
+    (buffer, count)
+}
+
+fn vertex_bytes(vertices: &[Vertex]) -> (Vec<u8>, u32) {
+    padded_vertex_bytes(bytemuck::cast_slice(vertices), vertices.len() as u32)
+}
+
+fn padded_vertex_bytes(bytes: &[u8], count: u32) -> (Vec<u8>, u32) {
+    if bytes.is_empty() {
+        (vec![0u8; 64], 0)
+    } else {
+        (bytes.to_vec(), count)
+    }
 }
 
 pub fn color_levels(bits: u32) -> f32 {
@@ -249,5 +262,29 @@ mod tests {
         assert_eq!(color_levels(5), 31.0);
         assert_eq!(color_levels(6), 63.0);
         assert_eq!(color_levels(20), 255.0);
+    }
+}
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+
+    #[test]
+    fn empty_vertex_lists_get_a_map_aligned_placeholder() {
+        let (contents, count) = padded_vertex_bytes(&[], 0);
+        assert_eq!(count, 0);
+        assert!(
+            contents.len() >= 48,
+            "placeholder too small: {}",
+            contents.len()
+        );
+        assert_eq!(contents.len() % 8, 0, "placeholder is not 8-byte aligned");
+    }
+
+    #[test]
+    fn filled_vertex_lists_keep_their_bytes() {
+        let data = [1u8, 2, 3, 4];
+        let (contents, count) = padded_vertex_bytes(&data, 1);
+        assert_eq!(count, 1);
+        assert_eq!(contents, data);
     }
 }

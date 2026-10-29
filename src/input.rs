@@ -14,6 +14,7 @@ pub struct Input {
     dash_pressed: bool,
     slide_pressed: bool,
     respawn_pressed: bool,
+    cheats_pressed: bool,
     fire_held: bool,
 }
 
@@ -28,6 +29,7 @@ impl Input {
         self.dash_pressed |= key == keys.dash;
         self.slide_pressed |= key == keys.slide;
         self.respawn_pressed |= key == keys.respawn;
+        self.cheats_pressed |= key == keys.cheats;
     }
 
     pub fn key_released(&mut self, key: KeyCode) {
@@ -64,12 +66,14 @@ impl Input {
             slide_held: self.held.contains(&keys.slide),
             fire_held: self.fire_held,
             respawn: self.respawn_pressed,
+            toggle_cheats: self.cheats_pressed,
         };
         self.mouse_delta = Vec2::ZERO;
         self.jump_pressed = false;
         self.dash_pressed = false;
         self.slide_pressed = false;
         self.respawn_pressed = false;
+        self.cheats_pressed = false;
         actions
     }
 }

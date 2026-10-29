@@ -26,6 +26,8 @@ pub struct OverlayContent<'a> {
     pub report: &'a DebugReport,
     pub hud: &'a Hud,
     pub lab: &'a mut LightingLab,
+    pub menu: Option<&'a mut crate::menu::Menu>,
+    pub pause: Option<&'a mut crate::menu::PauseMenu>,
 }
 
 pub struct Overlay {
@@ -70,12 +72,34 @@ impl Overlay {
         queue: &wgpu::Queue,
         frame: &mut Frame,
         content: OverlayContent,
-    ) -> bool {
+    ) -> (
+        bool,
+        Option<crate::menu::MenuAction>,
+        Option<crate::menu::PauseAction>,
+    ) {
         let debug_visible = self.debug_visible;
-        let OverlayContent { report, hud, lab } = content;
+        let OverlayContent {
+            report,
+            hud,
+            lab,
+            mut menu,
+            mut pause,
+        } = content;
         let mut save_lighting = false;
+        let mut menu_action = None;
+        let mut pause_action = None;
         let input = self.state.take_egui_input(window);
+        let menu_visible = menu.as_ref().is_some_and(|menu| menu.visible);
         let mut output = self.context.run_ui(input, |ui| {
+            if let Some(menu) = menu.as_deref_mut() {
+                menu_action = menu.draw(ui);
+            }
+            if menu_visible {
+                return;
+            }
+            if let Some(pause) = pause.as_deref_mut() {
+                pause_action = pause.draw(ui);
+            }
             draw_hud(ui, hud);
             if lab.visible {
                 save_lighting |= lab.ui(ui.ctx());
@@ -158,7 +182,7 @@ impl Overlay {
         for id in output.textures_delta.free.drain() {
             self.renderer.free_texture(&id);
         }
-        save_lighting
+        (save_lighting, menu_action, pause_action)
     }
 }
 

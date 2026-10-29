@@ -5,11 +5,14 @@ impl App {
         let Some(run) = &self.screenshots else {
             return false;
         };
-        let Some((preset, shot)) = run.current().map(|(preset, shot)| (preset, shot.clone()))
+        let Some((preset, level, shot)) = run
+            .current()
+            .map(|(preset, level, shot)| (preset, level.to_owned(), shot.clone()))
         else {
             self.exit_requested = true;
             return true;
         };
+        self.load_named_level(&level);
         self.lab.select(preset);
         let player = &mut self.game.player;
         player.position = shot.position;
@@ -24,14 +27,16 @@ impl App {
         let (Some(run), Some(state)) = (&mut self.screenshots, &self.window_state) else {
             return;
         };
-        let Some((preset, shot)) = run.current().map(|(preset, shot)| (preset, shot.clone()))
+        let Some((preset, level, shot)) = run
+            .current()
+            .map(|(preset, level, shot)| (preset, level.to_owned(), shot.clone()))
         else {
             return;
         };
         if !run.ready_to_capture() {
             return;
         }
-        let path = run.path_for(self.lab.preset_name(preset), &shot);
+        let path = run.path_for(self.lab.preset_name(preset), &level, &shot);
         match state
             .renderer
             .capture()

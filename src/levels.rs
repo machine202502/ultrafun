@@ -9,7 +9,7 @@ use crate::render::{Atmosphere, PointLight, RoomAtmosphere, RoomLights};
 pub const LEVELS_DIRECTORY: &str = "assets/levels";
 pub const TEST_ROOM_LEVEL: &str = "test_room";
 pub const TEST_ROOM_FILE: &str = "test_room.ron";
-const SWITCHABLE_LEVELS: [&str; 2] = ["utilization", TEST_ROOM_LEVEL];
+pub const SWITCHABLE_LEVELS: [&str; 3] = ["utilization", "foundry", TEST_ROOM_LEVEL];
 
 pub struct LoadedLevel {
     pub level: game::Level,
@@ -51,7 +51,8 @@ mod tests {
 
     #[test]
     fn levels_switch_in_a_cycle() {
-        assert_eq!(next_level("utilization"), TEST_ROOM_LEVEL);
+        assert_eq!(next_level("utilization"), "foundry");
+        assert_eq!(next_level("foundry"), TEST_ROOM_LEVEL);
         assert_eq!(next_level(TEST_ROOM_LEVEL), "utilization");
         assert_eq!(next_level("unknown"), "utilization");
     }
