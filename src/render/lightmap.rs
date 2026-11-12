@@ -462,6 +462,7 @@ mod tests {
             center,
             size,
             rotation_degrees: Vec3::ZERO,
+            material: None,
             color: [1.0; 3],
         }
     }

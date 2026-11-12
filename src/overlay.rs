@@ -28,6 +28,7 @@ pub struct OverlayContent<'a> {
     pub lab: &'a mut LightingLab,
     pub menu: Option<&'a mut crate::menu::Menu>,
     pub pause: Option<&'a mut crate::menu::PauseMenu>,
+    pub remote_pointer: Option<(f32, f32)>,
 }
 
 pub struct Overlay {
@@ -40,6 +41,7 @@ pub struct Overlay {
 impl Overlay {
     pub fn new(window: &Window, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let context = egui::Context::default();
+        install_fonts(&context);
         let max_texture_side = device.limits().max_texture_dimension_2d as usize;
         let state = egui_winit::State::new(
             context.clone(),
@@ -77,6 +79,10 @@ impl Overlay {
         Option<crate::menu::MenuAction>,
         Option<crate::menu::PauseAction>,
     ) {
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return (false, None, None);
+        }
         let debug_visible = self.debug_visible;
         let OverlayContent {
             report,
@@ -84,6 +90,7 @@ impl Overlay {
             lab,
             mut menu,
             mut pause,
+            remote_pointer,
         } = content;
         let mut save_lighting = false;
         let mut menu_action = None;
@@ -101,6 +108,9 @@ impl Overlay {
                 pause_action = pause.draw(ui);
             }
             draw_hud(ui, hud);
+            if let Some((x, y)) = remote_pointer {
+                draw_remote_pointer(ui, egui::pos2(x, y));
+            }
             if lab.visible {
                 save_lighting |= lab.ui(ui.ctx());
             }
@@ -214,6 +224,41 @@ impl DebugReport {
     }
 }
 
+fn install_fonts(context: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = false;
+    for (family, name, path) in [
+        (
+            egui::FontFamily::Proportional,
+            "russo_one",
+            "assets/fonts/RussoOne-Regular.ttf",
+        ),
+        (
+            egui::FontFamily::Monospace,
+            "pt_mono",
+            "assets/fonts/PTMono-Regular.ttf",
+        ),
+    ] {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                fonts
+                    .font_data
+                    .insert(name.to_owned(), egui::FontData::from_owned(bytes).into());
+                fonts
+                    .families
+                    .entry(family)
+                    .or_default()
+                    .insert(0, name.to_owned());
+                loaded = true;
+            }
+            Err(error) => log::warn!("font {path} unavailable: {error}"),
+        }
+    }
+    if loaded {
+        context.set_fonts(fonts);
+    }
+}
+
 fn movement_state_name(state: &game::MoveState) -> &'static str {
     match state {
         game::MoveState::Normal => "normal",
@@ -221,4 +266,38 @@ fn movement_state_name(state: &game::MoveState) -> &'static str {
         game::MoveState::Slide { .. } => "slide",
         game::MoveState::Slam { .. } => "slam",
     }
+}
+
+fn draw_remote_pointer(ui: &mut egui::Ui, position: egui::Pos2) {
+    let color = egui::Color32::from_rgb(120, 220, 255);
+    let painter = ui.painter();
+    painter.circle_filled(position, 5.0, color);
+    painter.line_segment(
+        [
+            position + egui::vec2(-12.0, 0.0),
+            position + egui::vec2(-7.0, 0.0),
+        ],
+        egui::Stroke::new(2.0, color),
+    );
+    painter.line_segment(
+        [
+            position + egui::vec2(7.0, 0.0),
+            position + egui::vec2(12.0, 0.0),
+        ],
+        egui::Stroke::new(2.0, color),
+    );
+    painter.line_segment(
+        [
+            position + egui::vec2(0.0, -12.0),
+            position + egui::vec2(0.0, -7.0),
+        ],
+        egui::Stroke::new(2.0, color),
+    );
+    painter.line_segment(
+        [
+            position + egui::vec2(0.0, 7.0),
+            position + egui::vec2(0.0, 12.0),
+        ],
+        egui::Stroke::new(2.0, color),
+    );
 }

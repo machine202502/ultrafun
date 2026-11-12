@@ -30,6 +30,7 @@ pub struct KeyBindings {
     pub slide: KeyCode,
     pub respawn: KeyCode,
     pub cheats: KeyCode,
+    pub weapons: [KeyCode; 3],
 }
 
 impl Settings {

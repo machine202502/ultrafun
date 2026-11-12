@@ -9,11 +9,93 @@ use crate::collision::CollisionWorld;
 use crate::enemy::{Enemy, GruntConfig};
 use crate::script::Switch;
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct WeaponConfig {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub enum WeaponKind {
+    #[default]
+    RivetGun,
+    Sandblaster,
+    PlasmaCutter,
+}
+
+impl WeaponKind {
+    pub const ALL: [Self; 3] = [Self::RivetGun, Self::Sandblaster, Self::PlasmaCutter];
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::RivetGun => 0,
+            Self::Sandblaster => 1,
+            Self::PlasmaCutter => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FireMode {
+    Primary,
+    Secondary,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct FireConfig {
     pub damage: f32,
     pub cooldown_seconds: f32,
     pub range: f32,
+    pub impulse: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolConfig {
+    pub primary: FireConfig,
+    pub secondary: FireConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WeaponConfig {
+    pub rivet_gun: ToolConfig,
+    pub sandblaster: ToolConfig,
+    pub plasma_cutter: ToolConfig,
+    pub pellets: u32,
+    pub spread_degrees: f32,
+    pub blast_cone_degrees: f32,
+    pub blast_recoil: f32,
+    pub projectile_speed: f32,
+    pub projectile_lifetime: f32,
+    pub pin_range: f32,
+    pub pin_seconds: f32,
+    pub charge_seconds: f32,
+    pub min_charge_fraction: f32,
+}
+
+impl WeaponConfig {
+    pub fn fire(&self, weapon: WeaponKind, mode: FireMode) -> FireConfig {
+        let tool = match weapon {
+            WeaponKind::RivetGun => &self.rivet_gun,
+            WeaponKind::Sandblaster => &self.sandblaster,
+            WeaponKind::PlasmaCutter => &self.plasma_cutter,
+        };
+        match mode {
+            FireMode::Primary => tool.primary,
+            FireMode::Secondary => tool.secondary,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WeaponState {
+    pub selected: WeaponKind,
+    pub cooldowns: [f32; 3],
+    pub charge: f32,
+    pub beam: Option<(Vec3, Vec3)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Projectile {
+    pub position: Vec3,
+    pub previous_position: Vec3,
+    pub velocity: Vec3,
+    pub lifetime: f32,
+    pub damage: f32,
+    pub impulse: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

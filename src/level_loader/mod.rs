@@ -1,4 +1,4 @@
-mod scene;
+pub mod scene;
 
 use std::path::Path;
 
@@ -7,12 +7,14 @@ use game::{
     ArenaSpawn, BeltSpawn, BreakableSpawn, CrusherSpawn, DEFAULT_HAZARD_DAMAGE_PER_SECOND,
     DoorSpawn, EnemySpawn, HazardSpawn, KeySpawn, Level, LevelBox, MachineSpawn, PadSpawn,
     ScriptAction, SpawnGroup, SwitchSpawn, TargetSpawn, TriggerSpawn, TubeSpawn, Zone,
+    coplanar_face_overlaps,
 };
 use glam::{EulerRot, Quat, Vec3};
 use serde::Deserialize;
 
 use crate::render::{Atmosphere, PointLight};
 
+pub use scene::SceneDecor;
 use scene::{LINEAR_TO_DISPLAY_GAMMA, SceneCube, SceneObjects, ScenePoint, read_scene};
 
 const PLAYER_START: &str = "player_start";
@@ -68,6 +70,12 @@ pub struct BlenderLevelFile {
     pub checkpoints: Vec<String>,
     #[serde(default)]
     pub next_level: Option<String>,
+    #[serde(default)]
+    pub validate_geometry: bool,
+    #[serde(default)]
+    pub spawn_yaw_degrees: Option<f32>,
+    #[serde(default)]
+    pub navigation: Vec<game::NavNode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -148,11 +156,13 @@ pub struct TriggerRules {
 pub fn load_blender_level(
     directory: &Path,
     file: &BlenderLevelFile,
-) -> Result<(Level, Vec<PointLight>)> {
+) -> Result<(Level, Vec<PointLight>, Vec<SceneDecor>)> {
     let path = directory.join(&file.model);
     let bytes = std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
     let objects = read_scene(&bytes).with_context(|| format!("cannot load {}", path.display()))?;
-    Ok((build_level(&objects, file)?, level_lights(&objects, file)))
+    let lights = level_lights(&objects, file);
+    let level = build_level(&objects, file)?;
+    Ok((level, lights, objects.decor))
 }
 
 pub fn level_lights(objects: &SceneObjects, file: &BlenderLevelFile) -> Vec<PointLight> {
@@ -180,19 +190,21 @@ pub fn facing_yaw_degrees(rotation: Quat) -> f32 {
 }
 
 pub fn build_level(objects: &SceneObjects, file: &BlenderLevelFile) -> Result<Level> {
-    let start = single_point(objects, PLAYER_START)?;
-    let boxes = objects
-        .cubes
-        .iter()
-        .filter(|(name, _)| {
-            !NON_SOLID_PREFIXES
+    for (index, node) in file.navigation.iter().enumerate() {
+        if !node.position.is_finite()
+            || node
+                .links
                 .iter()
-                .any(|prefix| name.starts_with(prefix))
-                && name.as_str() != TARGET
-                && name.as_str() != EXIT
-        })
-        .flat_map(|(_, cubes)| cubes)
-        .map(level_box)
+                .any(|link| *link >= file.navigation.len() || *link == index)
+        {
+            bail!("invalid navigation node {index}");
+        }
+    }
+    let start = single_point(objects, PLAYER_START)?;
+    let environment = environment_boxes(objects);
+    let boxes = environment
+        .iter()
+        .map(|(_, cube)| level_box(cube, cube.material.as_deref()))
         .collect();
     let targets = cubes(objects, TARGET)
         .iter()
@@ -229,10 +241,16 @@ pub fn build_level(objects: &SceneObjects, file: &BlenderLevelFile) -> Result<Le
         &spawns,
         &file.breakables,
     )?;
+    if file.validate_geometry {
+        ensure_no_z_fighting(&environment, &doors, &breakables, &switches, &hazards)?;
+    }
     Ok(Level {
         spawn_position: start.position,
-        spawn_yaw_degrees: facing_yaw_degrees(start.rotation),
+        spawn_yaw_degrees: file
+            .spawn_yaw_degrees
+            .unwrap_or_else(|| facing_yaw_degrees(start.rotation)),
         boxes,
+        navigation: file.navigation.clone(),
         targets,
         enemies,
         arenas,
@@ -568,14 +586,120 @@ fn build_arena(objects: &SceneObjects, rules: &ArenaRules) -> Result<ArenaSpawn>
     })
 }
 
-fn level_box(cube: &SceneCube) -> LevelBox {
+fn level_box(cube: &SceneCube, material: Option<&str>) -> LevelBox {
     let (x, y, z) = cube.rotation.to_euler(EulerRot::XYZ);
     LevelBox {
         center: cube.center,
         size: cube.size,
         rotation_degrees: Vec3::new(x.to_degrees(), y.to_degrees(), z.to_degrees()),
+        material: material.map(str::to_owned),
         color: cube.color,
     }
+}
+
+fn environment_boxes(objects: &SceneObjects) -> Vec<(&str, &SceneCube)> {
+    objects
+        .cubes
+        .iter()
+        .filter(|(name, _)| {
+            !NON_SOLID_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+                && name.as_str() != TARGET
+                && name.as_str() != EXIT
+        })
+        .flat_map(|(name, cubes)| cubes.iter().map(move |cube| (name.as_str(), cube)))
+        .collect()
+}
+
+fn ensure_no_z_fighting(
+    environment: &[(&str, &SceneCube)],
+    doors: &[DoorSpawn],
+    breakables: &[BreakableSpawn],
+    switches: &[SwitchSpawn],
+    hazards: &[HazardSpawn],
+) -> Result<()> {
+    let mut named: Vec<(String, LevelBox)> = environment
+        .iter()
+        .map(|(name, cube)| ((*name).to_owned(), level_box(cube, None)))
+        .collect();
+    for door in doors {
+        for zone in &door.zones {
+            named.push((format!("door_{}", door.name), zone_box(zone, door.color)));
+        }
+    }
+    for breakable in breakables {
+        for zone in &breakable.zones {
+            named.push((
+                format!("breakable_{}", breakable.name),
+                zone_box(zone, breakable.color),
+            ));
+        }
+    }
+    for switch in switches {
+        named.push((
+            format!("switch_{}", switch.name),
+            zone_box(&switch.zone, switch.color),
+        ));
+    }
+    for hazard in hazards {
+        named.push((
+            format!("hazard_{}", hazard.name),
+            zone_box(&hazard.zone, hazard.color),
+        ));
+    }
+    let boxes: Vec<LevelBox> = named
+        .iter()
+        .map(|(_, level_box)| level_box.clone())
+        .collect();
+    let overlaps = coplanar_face_overlaps(&boxes);
+    if overlaps.is_empty() {
+        return Ok(());
+    }
+    let mut lines: Vec<String> = overlaps
+        .iter()
+        .map(|overlap| {
+            format!(
+                "{} and {} share plane {}={:.3} ({} / {})",
+                named[overlap.first].0,
+                named[overlap.second].0,
+                axis_name(overlap.axis),
+                overlap.plane,
+                describe_box(&boxes[overlap.first]),
+                describe_box(&boxes[overlap.second]),
+            )
+        })
+        .collect();
+    lines.sort();
+    lines.dedup();
+    bail!("z-fighting in level geometry:\n  {}", lines.join("\n  "))
+}
+
+fn zone_box(zone: &Zone, color: [f32; 3]) -> LevelBox {
+    LevelBox {
+        center: zone.center,
+        size: zone.size,
+        rotation_degrees: Vec3::ZERO,
+        material: None,
+        color,
+    }
+}
+
+fn axis_name(axis: usize) -> char {
+    match axis {
+        0 => 'x',
+        1 => 'y',
+        _ => 'z',
+    }
+}
+
+fn describe_box(level_box: &LevelBox) -> String {
+    let min = level_box.center - level_box.size * 0.5;
+    let max = level_box.center + level_box.size * 0.5;
+    format!(
+        "[{:.1}..{:.1} x {:.1}..{:.1} x {:.1}..{:.1}]",
+        min.x, max.x, min.y, max.y, min.z, max.z
+    )
 }
 
 fn zone(cube: &SceneCube) -> Zone {
@@ -615,6 +739,8 @@ fn single_point<'a>(objects: &'a SceneObjects, name: &str) -> Result<&'a ScenePo
     Ok(&required_points(objects, name)?[0])
 }
 
+#[cfg(test)]
+mod laboratory_tests;
 #[cfg(test)]
 mod route_tests;
 

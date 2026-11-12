@@ -1,6 +1,18 @@
 (
     levels: [
         (
+            level: "laboratory",
+            shots: [
+                (name: "01_start", position: (-48.0, 0.01, 40.0), yaw_degrees: 90.0, pitch_degrees: 0.0),
+                (name: "02_hub", position: (-8.0, 0.01, 16.0), yaw_degrees: 0.0, pitch_degrees: 18.0),
+                (name: "03_arena", position: (55.0, 2.01, 8.0), yaw_degrees: 90.0, pitch_degrees: 0.0),
+                (name: "04_stairs", position: (96.0, 4.01, -30.0), yaw_degrees: 0.0, pitch_degrees: 10.0),
+                (name: "05_upper", position: (-40.0, 30.01, -132.0), yaw_degrees: 90.0, pitch_degrees: -8.0),
+                (name: "06_drop", position: (128.0, 36.01, -119.0), yaw_degrees: 180.0, pitch_degrees: -35.0),
+                (name: "07_final", position: (-54.0, 0.01, -46.0), yaw_degrees: 270.0, pitch_degrees: 0.0),
+            ],
+        ),
+        (
             level: "utilization",
             shots: [
                 (name: "01_start", position: (0.0, 1.01, -3.0), yaw_degrees: 0.0, pitch_degrees: -8.0),

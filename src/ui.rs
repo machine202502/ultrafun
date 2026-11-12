@@ -30,6 +30,7 @@ pub struct Hud {
     pub subtitle: Option<String>,
     pub keys: Vec<String>,
     pub report: Option<Vec<String>>,
+    pub weapon: Option<(String, f32, f32)>,
 }
 
 pub fn draw_hud(ui: &egui::Ui, hud: &Hud) {
@@ -40,6 +41,29 @@ pub fn draw_hud(ui: &egui::Ui, hud: &Hud) {
     }
     draw_crosshair(painter, screen);
     draw_health(painter, screen, hud.health_fraction);
+    if let Some((name, ready, charge)) = &hud.weapon {
+        let origin = pos2(screen.left() + 24.0, screen.bottom() - 65.0);
+        painter.text(
+            origin,
+            Align2::LEFT_BOTTOM,
+            name,
+            FontId::monospace(18.0),
+            REPORT_COLOR,
+        );
+        let bar = Rect::from_min_size(origin + vec2(0.0, 5.0), vec2(240.0, 4.0));
+        painter.rect_filled(bar, 0.0, PANEL_BACK);
+        let mut fill = bar;
+        fill.set_width(bar.width() * if *charge > 0.0 { *charge } else { *ready });
+        painter.rect_filled(
+            fill,
+            0.0,
+            if *charge > 0.0 {
+                Color32::from_rgb(255, 150, 45)
+            } else {
+                Color32::from_rgb(60, 200, 210)
+            },
+        );
+    }
     if let Some(cheats) = &hud.cheats {
         painter.text(
             screen.left_top() + egui::vec2(16.0, 16.0),
@@ -150,7 +174,17 @@ pub fn build_hud(game: &game::Game, dispatcher: &Dispatcher, texts: &Texts) -> H
         }
         lines
     });
+    let weapon_name = match game.weapon.selected {
+        game::WeaponKind::RivetGun => "weapon.rivet",
+        game::WeaponKind::Sandblaster => "weapon.sand",
+        game::WeaponKind::PlasmaCutter => "weapon.plasma",
+    };
     Hud {
+        weapon: Some((
+            texts.get(weapon_name).to_owned(),
+            game.ready_fraction(),
+            game.charge_fraction(),
+        )),
         health_fraction: game.player.health / game.config.health.max_health,
         dead: game.restart_countdown_seconds.is_some(),
         cheats: game.cheats.then(|| texts.get("hud.cheats").to_owned()),

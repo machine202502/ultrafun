@@ -54,6 +54,7 @@ pub fn solid(center: Vec3, size: Vec3) -> LevelBox {
         center,
         size,
         rotation_degrees: Vec3::ZERO,
+        material: None,
         color: [0.5; 3],
     }
 }
@@ -102,6 +103,7 @@ fn level_with_floor(mut boxes: Vec<LevelBox>, spawn: Vec3) -> Level {
         spawn_position: spawn,
         spawn_yaw_degrees: 0.0,
         boxes,
+        navigation: Vec::new(),
         targets: Vec::new(),
         enemies: Vec::new(),
         arenas: Vec::new(),
@@ -182,10 +184,35 @@ pub fn run(game: &mut Game, actions: Actions, seconds: f32) {
 }
 
 pub fn weapon_config() -> WeaponConfig {
+    let fire = |damage, cooldown_seconds, range, impulse| game::FireConfig {
+        damage,
+        cooldown_seconds,
+        range,
+        impulse,
+    };
     WeaponConfig {
-        damage: 1.0,
-        cooldown_seconds: 0.3,
-        range: 500.0,
+        rivet_gun: game::ToolConfig {
+            primary: fire(1.0, 0.3, 500.0, 8.0),
+            secondary: fire(1.5, 0.9, 120.0, 22.0),
+        },
+        sandblaster: game::ToolConfig {
+            primary: fire(0.45, 0.65, 24.0, 3.0),
+            secondary: fire(0.5, 1.1, 12.0, 32.0),
+        },
+        plasma_cutter: game::ToolConfig {
+            primary: fire(0.3, 0.08, 35.0, 1.0),
+            secondary: fire(5.0, 1.5, 150.0, 14.0),
+        },
+        pellets: 9,
+        spread_degrees: 7.0,
+        blast_cone_degrees: 32.0,
+        blast_recoil: 14.0,
+        projectile_speed: 55.0,
+        projectile_lifetime: 2.0,
+        pin_range: 3.0,
+        pin_seconds: 1.4,
+        charge_seconds: 0.75,
+        min_charge_fraction: 0.3,
     }
 }
 

@@ -40,13 +40,33 @@ pub struct LightUniforms {
     lights: [GpuLight; MAX_LIGHTS],
 }
 
-pub fn shaded_level_lights(lights: &[PointLight], shadows: bool) -> Vec<ShadedLight> {
+pub fn shadow_selection(lights: &[PointLight], eye: Vec3, previous: &[usize]) -> Vec<usize> {
+    let mut indices: Vec<_> = (0..lights.len()).collect();
+    let cost = |index: usize| {
+        let light = lights[index];
+        let distance = (light.position.distance(eye) - light.range * 0.25).max(0.0);
+        distance * if previous.contains(&index) { 0.8 } else { 1.0 }
+    };
+    indices.sort_by(|a, b| cost(*a).total_cmp(&cost(*b)).then(a.cmp(b)));
+    indices.truncate(MAX_SHADOWED_LIGHTS);
+    indices.sort_unstable();
+    indices
+}
+
+pub fn shaded_level_lights(
+    lights: &[PointLight],
+    selection: &[usize],
+    shadows: bool,
+) -> Vec<ShadedLight> {
     lights
         .iter()
-        .zip(0..)
-        .map(|(light, index)| ShadedLight {
+        .enumerate()
+        .map(|(index, light)| ShadedLight {
             light: *light,
-            shadow_index: (shadows && (index as usize) < MAX_SHADOWED_LIGHTS).then_some(index),
+            shadow_index: shadows
+                .then(|| selection.iter().position(|selected| *selected == index))
+                .flatten()
+                .map(|slot| slot as u32),
         })
         .collect()
 }
@@ -127,15 +147,16 @@ mod tests {
     }
 
     #[test]
-    fn only_first_level_lights_get_shadow_maps() {
+    fn shadow_maps_follow_nearby_lights_instead_of_export_order() {
         let lights: Vec<PointLight> = (0..MAX_SHADOWED_LIGHTS + 2)
             .map(|index| light_at(index as f32))
             .collect();
-        let shaded = shaded_level_lights(&lights, true);
-        assert_eq!(shaded[0].shadow_index, Some(0));
-        assert_eq!(shaded[MAX_SHADOWED_LIGHTS].shadow_index, None);
+        let selected = shadow_selection(&lights, Vec3::new(100.0, 0.0, 0.0), &[]);
+        let shaded = shaded_level_lights(&lights, &selected, true);
+        assert_eq!(shaded[0].shadow_index, None);
+        assert!(shaded[MAX_SHADOWED_LIGHTS].shadow_index.is_some());
         assert!(
-            shaded_level_lights(&lights, false)
+            shaded_level_lights(&lights, &selected, false)
                 .iter()
                 .all(|light| light.shadow_index.is_none())
         );

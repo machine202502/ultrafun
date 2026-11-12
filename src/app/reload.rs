@@ -10,6 +10,12 @@ use crate::settings::Settings;
 
 impl App {
     pub(super) fn reload_changed_data(&mut self) {
+        let materials_changed = !self.textures.changed_file_names().is_empty()
+            | !self.models.changed_file_names().is_empty();
+        if materials_changed && let Some(state) = &mut self.window_state {
+            let result = state.renderer.reload_materials();
+            self.report_reload("materials and models", result);
+        }
         let level_changed = self
             .levels
             .changed_file_names()
@@ -70,12 +76,15 @@ impl App {
             level,
             atmosphere,
             lights,
+            decor,
         } = load_level(&self.data, &self.levels, &self.level_name)?;
+        self.decor = decor;
         if let Some(state) = &mut self.window_state {
             state.renderer.set_level(LevelView {
                 level: &level,
                 atmosphere: atmosphere.clone(),
                 lights: lights.clone(),
+                decor: &self.decor,
             });
         }
         self.game.set_level(level);

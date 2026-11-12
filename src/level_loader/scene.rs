@@ -3,13 +3,17 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use glam::{Mat4, Quat, Vec3};
 
+use crate::model::{Primitive, read_primitive};
+
 pub const LINEAR_TO_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
+pub const DECOR_PREFIX: &str = "deco_";
 
 #[derive(Debug, Clone, Default)]
 pub struct SceneObjects {
     pub cubes: HashMap<String, Vec<SceneCube>>,
     pub points: HashMap<String, Vec<ScenePoint>>,
     pub lights: Vec<SceneLight>,
+    pub decor: Vec<SceneDecor>,
 }
 
 #[derive(Debug, Clone)]
@@ -18,6 +22,7 @@ pub struct SceneCube {
     pub size: Vec3,
     pub rotation: Quat,
     pub color: [f32; 3],
+    pub material: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,24 +39,43 @@ pub struct SceneLight {
     pub range: Option<f32>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SceneDecor {
+    pub transform: Mat4,
+    pub primitive: Primitive,
+}
+
 pub fn read_scene(bytes: &[u8]) -> Result<SceneObjects> {
-    let gltf = gltf::Gltf::from_slice(bytes)?;
+    let (gltf, buffers, _) = gltf::import_slice(bytes)?;
     let scene = gltf
         .default_scene()
         .or_else(|| gltf.scenes().next())
         .context("file has no scene")?;
     let mut objects = SceneObjects::default();
     for node in scene.nodes() {
-        visit(&node, Mat4::IDENTITY, &mut objects);
+        visit(&node, Mat4::IDENTITY, &buffers, &mut objects)?;
     }
     Ok(objects)
 }
 
-fn visit(node: &gltf::Node, parent: Mat4, objects: &mut SceneObjects) {
+fn visit(
+    node: &gltf::Node,
+    parent: Mat4,
+    buffers: &[gltf::buffer::Data],
+    objects: &mut SceneObjects,
+) -> Result<()> {
     let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
     let name = base_name(node.name().unwrap_or_default()).to_owned();
     let (scale, rotation, translation) = world.to_scale_rotation_translation();
     match node.mesh() {
+        Some(mesh) if name.starts_with(DECOR_PREFIX) => {
+            for primitive in mesh.primitives() {
+                objects.decor.push(SceneDecor {
+                    transform: world,
+                    primitive: read_primitive(primitive, buffers)?,
+                });
+            }
+        }
         Some(mesh) => {
             let (min, max) = mesh_bounds(&mesh);
             objects.cubes.entry(name).or_default().push(SceneCube {
@@ -59,6 +83,12 @@ fn visit(node: &gltf::Node, parent: Mat4, objects: &mut SceneObjects) {
                 size: (max - min) * scale.abs(),
                 rotation,
                 color: mesh_color(&mesh),
+                material: mesh.primitives().next().and_then(|primitive| {
+                    primitive
+                        .material()
+                        .name()
+                        .map(|name| base_name(name).to_owned())
+                }),
             });
         }
         None => match node.light() {
@@ -68,7 +98,7 @@ fn visit(node: &gltf::Node, parent: Mat4, objects: &mut SceneObjects) {
                     color: light.color(),
                     candela: light.intensity(),
                     range: light.range(),
-                })
+                });
             }
             _ => objects.points.entry(name).or_default().push(ScenePoint {
                 position: translation,
@@ -77,8 +107,9 @@ fn visit(node: &gltf::Node, parent: Mat4, objects: &mut SceneObjects) {
         },
     }
     for child in node.children() {
-        visit(&child, world, objects);
+        visit(&child, world, buffers, objects)?;
     }
+    Ok(())
 }
 
 fn mesh_bounds(mesh: &gltf::Mesh) -> (Vec3, Vec3) {

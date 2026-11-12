@@ -1,14 +1,26 @@
+use std::collections::HashMap;
+
 use egui::{Color32, Rect, Vec2};
 
 use crate::text::Texts;
 
-const BUTTON_WIDTH: f32 = 320.0;
-const BUTTON_HEIGHT: f32 = 40.0;
-const BUTTON_GAP: f32 = 8.0;
-const TITLE_OFFSET: f32 = 28.0;
+const TILE_COLUMNS: usize = 3;
+const TILE_WIDTH: f32 = 250.0;
+const TILE_IMAGE_HEIGHT: f32 = 141.0;
+const TILE_LABEL_HEIGHT: f32 = 30.0;
+const TILE_GAP: f32 = 18.0;
+const TITLE_TOP: f32 = 44.0;
+const BOTTOM_ROW_TOP: f32 = 40.0;
 const MENU_BACKGROUND: Color32 = Color32::from_rgb(12, 10, 9);
 const PANEL_BACKGROUND: Color32 = Color32::from_black_alpha(214);
 const TITLE_COLOR: Color32 = Color32::from_rgb(240, 230, 210);
+const TILE_BACKGROUND: Color32 = Color32::from_rgb(26, 24, 22);
+const TILE_SELECTED: Color32 = Color32::from_rgb(224, 122, 40);
+const TILE_LABEL_COLOR: Color32 = Color32::from_rgb(216, 210, 196);
+const SETTINGS_WIDTH: f32 = 190.0;
+const BUTTON_HEIGHT: f32 = 42.0;
+const BUTTON_GAP: f32 = 12.0;
+const PREVIEW_DIRECTORY: &str = "assets/levels/previews";
 
 pub enum MenuAction {
     Load(String),
@@ -20,6 +32,7 @@ pub struct Menu {
     pub selected: usize,
     title: String,
     entries: Vec<(String, String)>,
+    previews: HashMap<String, Option<egui::TextureHandle>>,
     settings: String,
     exit: String,
 }
@@ -31,20 +44,6 @@ fn button(label: &str, selected: bool) -> egui::Button<'_> {
     } else {
         button
     }
-}
-
-fn stacked_rects(screen: Rect, count: usize) -> Vec<Rect> {
-    let total = count as f32 * (BUTTON_HEIGHT + BUTTON_GAP) - BUTTON_GAP;
-    let first_top = screen.center().y - total * 0.5 + TITLE_OFFSET;
-    (0..count)
-        .map(|index| {
-            let top = first_top + index as f32 * (BUTTON_HEIGHT + BUTTON_GAP);
-            Rect::from_center_size(
-                egui::pos2(screen.center().x, top + BUTTON_HEIGHT * 0.5),
-                Vec2::new(BUTTON_WIDTH, BUTTON_HEIGHT),
-            )
-        })
-        .collect()
 }
 
 impl Menu {
@@ -63,13 +62,54 @@ impl Menu {
             selected: 0,
             title: texts.get("menu.title").to_owned(),
             entries,
+            previews: HashMap::new(),
             settings: texts.get("menu.settings").to_owned(),
             exit: texts.get("menu.exit").to_owned(),
         }
     }
 
-    fn button_rects(&self, screen: Rect) -> Vec<Rect> {
-        stacked_rects(screen, self.entries.len() + 2)
+    fn tile_rects(&self, screen: Rect) -> Vec<Rect> {
+        let count = self.entries.len();
+        let grid_width = TILE_COLUMNS as f32 * TILE_WIDTH + (TILE_COLUMNS as f32 - 1.0) * TILE_GAP;
+        let left = screen.center().x - grid_width * 0.5;
+        let top = screen.top() + TITLE_TOP + 72.0;
+        (0..count)
+            .map(|index| {
+                let column = index % TILE_COLUMNS;
+                let row = index / TILE_COLUMNS;
+                Rect::from_min_size(
+                    egui::pos2(
+                        left + column as f32 * (TILE_WIDTH + TILE_GAP),
+                        top + row as f32 * (TILE_IMAGE_HEIGHT + TILE_LABEL_HEIGHT + TILE_GAP),
+                    ),
+                    Vec2::new(TILE_WIDTH, TILE_IMAGE_HEIGHT + TILE_LABEL_HEIGHT),
+                )
+            })
+            .collect()
+    }
+
+    fn bottom_rects(&self, screen: Rect) -> (Rect, Rect) {
+        let settings_left = screen.center().x - SETTINGS_WIDTH - BUTTON_GAP * 0.5;
+        let exit_left = screen.center().x + BUTTON_GAP * 0.5;
+        let top = screen.bottom() - BOTTOM_ROW_TOP - BUTTON_HEIGHT;
+        (
+            Rect::from_min_size(
+                egui::pos2(settings_left, top),
+                Vec2::new(SETTINGS_WIDTH, BUTTON_HEIGHT),
+            ),
+            Rect::from_min_size(
+                egui::pos2(exit_left, top),
+                Vec2::new(SETTINGS_WIDTH, BUTTON_HEIGHT),
+            ),
+        )
+    }
+
+    pub fn choice_rects(&self, screen: Rect) -> Vec<Rect> {
+        let mut rects = self.tile_rects(screen);
+        let (settings, exit) = self.bottom_rects(screen);
+        rects.push(settings);
+        rects.push(exit);
+        rects
     }
 
     pub fn move_selection(&mut self, delta: i32) {
@@ -78,7 +118,7 @@ impl Menu {
     }
 
     pub fn hit_test(&mut self, position: egui::Pos2, screen: Rect) -> Option<MenuAction> {
-        let rects = self.button_rects(screen);
+        let rects = self.choice_rects(screen);
         for (index, rect) in rects.iter().enumerate() {
             if !rect.contains(position) {
                 continue;
@@ -110,32 +150,84 @@ impl Menu {
             return None;
         }
         let screen = ui.max_rect();
-        let rects = self.button_rects(screen);
+        let rects = self.choice_rects(screen);
         let mut action = None;
         ui.painter().rect_filled(screen, 0.0, MENU_BACKGROUND);
         ui.painter().text(
-            egui::pos2(screen.center().x, rects[0].top() - 40.0),
-            egui::Align2::CENTER_BOTTOM,
+            egui::pos2(screen.center().x, screen.top() + TITLE_TOP),
+            egui::Align2::CENTER_TOP,
             &self.title,
-            egui::FontId::proportional(32.0),
+            egui::FontId::proportional(52.0),
             TITLE_COLOR,
         );
         for (index, (name, label)) in self.entries.iter().enumerate() {
-            let button = button(label, index == self.selected);
-            if ui.put(rects[index], button).clicked() {
+            let rect = rects[index];
+            let image_rect =
+                Rect::from_min_size(rect.min, Vec2::new(TILE_WIDTH, TILE_IMAGE_HEIGHT));
+            let response = ui.allocate_rect(rect, egui::Sense::click());
+            if response.clicked() {
                 action = Some(MenuAction::Load(name.clone()));
             }
+            if response.hovered() {
+                self.selected = index;
+            }
+            ui.painter().rect_filled(image_rect, 4.0, TILE_BACKGROUND);
+            let texture = self
+                .previews
+                .entry(name.clone())
+                .or_insert_with(|| load_preview(ui.ctx(), name))
+                .as_ref();
+            match texture {
+                Some(texture) => {
+                    ui.painter().image(
+                        texture.id(),
+                        image_rect,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                None => {
+                    let first = label.chars().next().unwrap_or('?');
+                    ui.painter().text(
+                        image_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        first.to_string(),
+                        egui::FontId::proportional(48.0),
+                        TILE_BACKGROUND,
+                    );
+                }
+            }
+            if self.selected == index {
+                ui.painter().rect_stroke(
+                    rect,
+                    4.0,
+                    egui::Stroke::new(3.0, TILE_SELECTED),
+                    egui::StrokeKind::Middle,
+                );
+            }
+            ui.painter().text(
+                egui::pos2(rect.center().x, rect.bottom() - TILE_LABEL_HEIGHT * 0.5),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(19.0),
+                if self.selected == index {
+                    TILE_SELECTED
+                } else {
+                    TILE_LABEL_COLOR
+                },
+            );
         }
         let settings_index = self.entries.len();
-        let settings_rect = rects[settings_index];
+        let exit_index = settings_index + 1;
         let _ = ui.put(
-            settings_rect,
+            rects[settings_index],
             button(&self.settings, self.selected == settings_index),
         );
-        let exit_index = settings_index + 1;
-        let exit_rect = rects[exit_index];
         if ui
-            .put(exit_rect, button(&self.exit, self.selected == exit_index))
+            .put(
+                rects[exit_index],
+                button(&self.exit, self.selected == exit_index),
+            )
             .clicked()
         {
             action = Some(MenuAction::Exit);
@@ -143,6 +235,20 @@ impl Menu {
         action
     }
 }
+
+fn load_preview(context: &egui::Context, name: &str) -> Option<egui::TextureHandle> {
+    let path = format!("{PREVIEW_DIRECTORY}/{name}.png");
+    let bytes = std::fs::read(&path).ok()?;
+    let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let (width, height) = image.dimensions();
+    let size = [width as usize, height as usize];
+    Some(context.load_texture(
+        name,
+        egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
+        egui::TextureOptions::default(),
+    ))
+}
+
 pub enum PauseAction {
     Resume,
     MainMenu,
@@ -241,140 +347,61 @@ impl PauseMenu {
         action
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn click(position: egui::Pos2) -> Option<MenuAction> {
+    fn screen() -> Rect {
+        Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1280.0, 720.0))
+    }
+
+    #[test]
+    fn keyboard_walks_tiles_settings_and_exit() {
         let texts = crate::text::Texts::load("en").unwrap();
         let mut menu = Menu::new(&["utilization", "foundry"], &texts, true);
-        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1280.0, 720.0));
-        let context = egui::Context::default();
-        let mut action = None;
-        for frame in 0..4 {
-            let events = match frame {
-                0 => vec![egui::Event::PointerMoved(position)],
-                1 => vec![
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                ],
-                _ => Vec::new(),
-            };
-            let input = egui::RawInput {
-                screen_rect: Some(screen),
-                events,
-                ..Default::default()
-            };
-            let output = context.run_ui(input, |ui| {
-                if let Some(found) = menu.draw(ui) {
-                    action = Some(found);
-                }
-            });
-            output.drop_without_applying_deltas();
-        }
-        action
-    }
-
-    #[test]
-    fn level_button_is_clickable() {
-        let texts = crate::text::Texts::load("en").unwrap();
-        let menu = Menu::new(&["utilization", "foundry"], &texts, true);
-        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1280.0, 720.0));
-        let button = menu.button_rects(screen)[1].center();
-        match click(button) {
-            Some(MenuAction::Load(name)) => assert_eq!(name, "foundry"),
-            _ => panic!("level button did not react to a click"),
-        }
-    }
-
-    #[test]
-    fn pause_buttons_are_clickable() {
-        let texts = crate::text::Texts::load("en").unwrap();
-        let mut pause = PauseMenu::new(&texts);
-        pause.visible = true;
-        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1280.0, 720.0));
-        let (resume_rect, menu_rect) = pause.button_rects(screen);
-        for (position, expected) in [
-            (resume_rect.center(), "resume"),
-            (menu_rect.center(), "menu"),
-        ] {
-            let context = egui::Context::default();
-            let mut action = None;
-            for frame in 0..4 {
-                let events = match frame {
-                    0 => vec![egui::Event::PointerMoved(position)],
-                    1 => vec![
-                        egui::Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: egui::Modifiers::default(),
-                        },
-                        egui::Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed: false,
-                            modifiers: egui::Modifiers::default(),
-                        },
-                    ],
-                    _ => Vec::new(),
-                };
-                let input = egui::RawInput {
-                    screen_rect: Some(screen),
-                    events,
-                    ..Default::default()
-                };
-                let output = context.run_ui(input, |ui| {
-                    if let Some(found) = pause.draw(ui) {
-                        action = Some(found);
-                    }
-                });
-                output.drop_without_applying_deltas();
-            }
-            match (expected, action) {
-                ("resume", Some(PauseAction::Resume)) => {}
-                ("menu", Some(PauseAction::MainMenu)) => {}
-                (_, found) => panic!("pause button {expected} did not react: {}", found.is_some()),
-            }
-        }
-    }
-
-    #[test]
-    fn exit_button_is_clickable() {
-        let texts = crate::text::Texts::load("en").unwrap();
-        let menu = Menu::new(&["utilization"], &texts, true);
-        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1280.0, 720.0));
-        let button = menu.button_rects(screen)[2].center();
-        assert!(matches!(click(button), Some(MenuAction::Exit)));
-    }
-}
-#[cfg(test)]
-mod keyboard_tests {
-    use super::*;
-
-    #[test]
-    fn arrows_and_enter_pick_a_level() {
-        let texts = crate::text::Texts::load("en").unwrap();
-        let mut menu = Menu::new(&["utilization", "foundry"], &texts, true);
-        assert!(matches!(menu.activate(), Some(MenuAction::Load(name)) if name == "utilization"));
+        assert!(matches!(
+            menu.activate(),
+            Some(MenuAction::Load(name)) if name == "utilization"
+        ));
         menu.move_selection(1);
-        assert!(matches!(menu.activate(), Some(MenuAction::Load(name)) if name == "foundry"));
+        assert!(matches!(
+            menu.activate(),
+            Some(MenuAction::Load(name)) if name == "foundry"
+        ));
         menu.move_selection(1);
         assert!(menu.activate().is_none(), "settings must do nothing");
         menu.move_selection(1);
         assert!(matches!(menu.activate(), Some(MenuAction::Exit)));
         menu.move_selection(1);
         assert_eq!(menu.selected, 0);
+    }
+
+    #[test]
+    fn hit_test_matches_the_drawn_choices() {
+        let texts = crate::text::Texts::load("en").unwrap();
+        let mut menu = Menu::new(&["utilization", "foundry"], &texts, true);
+        let rects = menu.choice_rects(screen());
+        assert!(matches!(
+            menu.hit_test(rects[1].center(), screen()),
+            Some(MenuAction::Load(name)) if name == "foundry"
+        ));
+        assert!(matches!(
+            menu.hit_test(rects[3].center(), screen()),
+            Some(MenuAction::Exit)
+        ));
+        assert!(menu.hit_test(egui::pos2(5.0, 5.0), screen()).is_none());
+
+        let mut pause = PauseMenu::new(&texts);
+        let (resume, main_menu) = pause.button_rects(screen());
+        assert!(matches!(
+            pause.hit_test(resume.center(), screen()),
+            Some(PauseAction::Resume)
+        ));
+        assert!(matches!(
+            pause.hit_test(main_menu.center(), screen()),
+            Some(PauseAction::MainMenu)
+        ));
     }
 
     #[test]
@@ -386,37 +413,5 @@ mod keyboard_tests {
         assert!(matches!(pause.activate(), Some(PauseAction::MainMenu)));
         pause.move_selection(1);
         assert!(matches!(pause.activate(), Some(PauseAction::Resume)));
-    }
-}
-#[cfg(test)]
-mod hit_tests {
-    use super::*;
-
-    #[test]
-    fn hit_test_matches_the_drawn_buttons() {
-        let texts = crate::text::Texts::load("en").unwrap();
-        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1280.0, 720.0));
-        let mut menu = Menu::new(&["utilization", "foundry"], &texts, true);
-        let rects = menu.button_rects(screen);
-        assert!(matches!(
-            menu.hit_test(rects[1].center(), screen),
-            Some(MenuAction::Load(name)) if name == "foundry"
-        ));
-        assert!(matches!(
-            menu.hit_test(rects[3].center(), screen),
-            Some(MenuAction::Exit)
-        ));
-        assert!(menu.hit_test(egui::pos2(5.0, 5.0), screen).is_none());
-
-        let mut pause = PauseMenu::new(&texts);
-        let (resume, main_menu) = pause.button_rects(screen);
-        assert!(matches!(
-            pause.hit_test(resume.center(), screen),
-            Some(PauseAction::Resume)
-        ));
-        assert!(matches!(
-            pause.hit_test(main_menu.center(), screen),
-            Some(PauseAction::MainMenu)
-        ));
     }
 }

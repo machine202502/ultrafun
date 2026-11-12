@@ -1,11 +1,13 @@
 mod arena;
 mod collision;
+mod combat;
 mod config;
 mod enemy;
 mod hazards;
 mod level;
 mod motion;
 mod movement;
+mod navigation;
 mod parts;
 mod player;
 mod script;
@@ -18,23 +20,27 @@ pub use hazards::{
     BeltSpawn, CrusherSpawn, DEFAULT_HAZARD_DAMAGE_PER_SECOND, Hazard, HazardSpawn, PadSpawn,
     TubeSpawn,
 };
-pub use level::{EnemySpawn, Level, LevelBox, TargetSpawn};
+pub use level::{
+    CoplanarOverlap, EnemySpawn, Level, LevelBox, TargetSpawn, coplanar_face_overlaps,
+};
+pub use navigation::NavNode;
 pub use parts::RepairPart;
 pub use player::{MoveState, Player, look_direction};
 pub use script::{
     Breakable, BreakableSpawn, Checkpoint, Door, DoorSpawn, Key, KeySpawn, ScriptAction,
     SpawnGroup, Switch, SwitchSpawn, TriggerSpawn,
 };
-pub use weapon::{Target, TargetKind, WeaponConfig};
+pub use weapon::{
+    FireConfig, FireMode, Projectile, Target, TargetKind, ToolConfig, WeaponConfig, WeaponKind,
+    WeaponState,
+};
 
 use collision::CollisionWorld;
 use glam::{Vec2, Vec3};
 use parry3d::query::Ray;
-use weapon::ShotHit;
 
 pub const STEP_SECONDS: f32 = 1.0 / 120.0;
 pub const CHEAT_FLY_SPEED: f32 = 24.0;
-const ENEMY_KNOCKBACK: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Actions {
@@ -45,6 +51,10 @@ pub struct Actions {
     pub slide_pressed: bool,
     pub slide_held: bool,
     pub fire_held: bool,
+    pub alt_held: bool,
+    pub alt_released: bool,
+    pub cancel_attacks: bool,
+    pub select_weapon: Option<WeaponKind>,
     pub respawn: bool,
     pub toggle_cheats: bool,
 }
@@ -58,6 +68,8 @@ pub enum GameEvent {
     ShotFired {
         origin: Vec3,
         end: Vec3,
+        weapon: WeaponKind,
+        mode: FireMode,
     },
     ShotImpact {
         position: Vec3,
@@ -165,7 +177,8 @@ pub struct Game {
     pub restart_countdown_seconds: Option<f32>,
     pub result: Option<LevelResult>,
     pub cheats: bool,
-    weapon_cooldown_seconds: f32,
+    pub weapon: WeaponState,
+    pub projectiles: Vec<Projectile>,
     next_enemy_id: u32,
     elapsed_steps: u32,
     kills: u32,
@@ -202,7 +215,8 @@ impl Game {
             checkpoint: None,
             events: Vec::new(),
             restart_countdown_seconds: None,
-            weapon_cooldown_seconds: 0.0,
+            weapon: WeaponState::default(),
+            projectiles: Vec::new(),
             next_enemy_id: 0,
             result: None,
             cheats: false,
@@ -247,7 +261,8 @@ impl Game {
         self.elapsed_steps = 0;
         self.kills = 0;
         self.events.push(GameEvent::LevelStarted);
-        self.weapon_cooldown_seconds = 0.0;
+        self.weapon = WeaponState::default();
+        self.projectiles.clear();
         self.rebuild_collision();
     }
 
@@ -295,6 +310,7 @@ impl Game {
             &mut self.player,
             &self.config.grunt,
             &self.collision,
+            &self.level.navigation,
             &mut self.events,
             STEP_SECONDS,
         );
@@ -344,11 +360,7 @@ impl Game {
             }
         }
         for index in fallen.into_iter().rev() {
-            let enemy = self.enemies.remove(index);
-            self.events.push(GameEvent::EnemyKilled {
-                id: enemy.id,
-                position: enemy.position,
-            });
+            self.finish_enemy(index, false);
         }
     }
 
@@ -368,6 +380,10 @@ impl Game {
         self.player.state = player::MoveState::Normal;
     }
 
+    pub fn line_of_sight(&self, from: Vec3, to: Vec3) -> bool {
+        self.collision.line_of_sight(from, to)
+    }
+
     pub fn ground_height(&self, point: Vec3) -> f32 {
         let origin = point + Vec3::Y * 0.05;
         let ray = Ray::new(origin, Vec3::NEG_Y);
@@ -378,77 +394,6 @@ impl Game {
 
     pub fn elapsed_seconds(&self) -> f32 {
         self.elapsed_steps as f32 * STEP_SECONDS
-    }
-
-    fn update_weapon(&mut self, actions: &Actions) {
-        self.weapon_cooldown_seconds = (self.weapon_cooldown_seconds - STEP_SECONDS).max(0.0);
-        if !actions.fire_held || self.weapon_cooldown_seconds > 0.0 {
-            return;
-        }
-        self.weapon_cooldown_seconds = self.config.weapon.cooldown_seconds;
-
-        let origin = self.eye_position();
-        let direction = look_direction(self.player.yaw, self.player.pitch);
-        let range = self.config.weapon.range;
-        let hit = weapon::trace_shot(
-            &Ray::new(origin, direction),
-            range,
-            &self.collision,
-            &self.targets,
-            &self.switches,
-            &self.enemies,
-            &self.config.grunt,
-        );
-        let end = origin + direction * hit.distance(range);
-        self.events.push(GameEvent::ShotFired { origin, end });
-
-        let damage = self.config.weapon.damage;
-        match hit {
-            ShotHit::Nothing => {}
-            ShotHit::Wall { normal, .. } => self.events.push(GameEvent::ShotImpact {
-                position: end,
-                normal,
-            }),
-            ShotHit::Target { index, .. } => {
-                let target = &mut self.targets[index];
-                target.health -= damage;
-                self.events.push(GameEvent::TargetHit { id: target.id });
-                if target.health <= 0.0 {
-                    let id = target.id;
-                    self.targets.remove(index);
-                    self.events
-                        .push(GameEvent::TargetDestroyed { id, position: end });
-                }
-            }
-            ShotHit::Switch { index, .. } => {
-                self.switches[index].health -= damage;
-            }
-            ShotHit::Enemy { index, .. } => {
-                let enemy = &mut self.enemies[index];
-                enemy.health -= damage;
-                let push = (end - self.player.position).normalize_or_zero();
-                let mut shove =
-                    Vec3::new(push.x, 0.0, push.z).normalize_or_zero() * ENEMY_KNOCKBACK;
-                shove += Vec3::Y * ENEMY_KNOCKBACK * 0.05;
-                enemy.knockback += shove;
-                self.events.push(GameEvent::EnemyHit {
-                    id: enemy.id,
-                    position: end,
-                    normal: -push,
-                });
-                if enemy.health <= 0.0 {
-                    let id = enemy.id;
-                    let center = enemy.position + Vec3::Y * self.config.grunt.height * 0.5;
-                    self.enemies.remove(index);
-                    parts::spawn_parts(center, id, &self.config.health, &mut self.parts);
-                    self.kills += 1;
-                    self.events.push(GameEvent::EnemyKilled {
-                        id,
-                        position: center,
-                    });
-                }
-            }
-        }
     }
 }
 

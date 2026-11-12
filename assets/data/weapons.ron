@@ -1,5 +1,24 @@
 (
-    damage: 1.0,
-    cooldown_seconds: 0.3,
-    range: 500.0,
+    rivet_gun: (
+        primary: (damage: 1.0, cooldown_seconds: 0.3, range: 500.0, impulse: 8.0),
+        secondary: (damage: 1.5, cooldown_seconds: 0.9, range: 120.0, impulse: 22.0),
+    ),
+    sandblaster: (
+        primary: (damage: 0.45, cooldown_seconds: 0.65, range: 24.0, impulse: 3.0),
+        secondary: (damage: 0.5, cooldown_seconds: 1.1, range: 12.0, impulse: 32.0),
+    ),
+    plasma_cutter: (
+        primary: (damage: 0.3, cooldown_seconds: 0.08, range: 35.0, impulse: 1.0),
+        secondary: (damage: 5.0, cooldown_seconds: 1.5, range: 150.0, impulse: 14.0),
+    ),
+    pellets: 9,
+    spread_degrees: 7.0,
+    blast_cone_degrees: 32.0,
+    blast_recoil: 14.0,
+    projectile_speed: 55.0,
+    projectile_lifetime: 2.0,
+    pin_range: 3.0,
+    pin_seconds: 1.4,
+    charge_seconds: 0.75,
+    min_charge_fraction: 0.3,
 )

@@ -69,3 +69,15 @@ lto = "thin"
 [[example]]
 name = "placeholder_sounds"
 test = true
+
+[[example]]
+name = "generate_atlases"
+test = true
+
+[[example]]
+name = "generate_characters"
+test = true
+
+[[example]]
+name = "placeholder_music"
+test = true

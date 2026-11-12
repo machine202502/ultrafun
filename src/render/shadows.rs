@@ -102,8 +102,7 @@ impl ShadowMaps {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         lights: &[PointLight],
-        vertices: &wgpu::Buffer,
-        vertex_count: u32,
+        geometry: &[(&wgpu::Buffer, u32)],
     ) {
         let shadowed = &lights[..lights.len().min(MAX_SHADOWED_LIGHTS)];
         let mut matrices = vec![[[0.0; 4]; 4]; MAX_SHADOW_FACES];
@@ -151,8 +150,12 @@ impl ShadowMaps {
             pass.set_pipeline(&self.pipeline);
             let offset = (layer as u64 * FACE_UNIFORM_STRIDE) as u32;
             pass.set_bind_group(0, &self.face_bind_group, &[offset]);
-            pass.set_vertex_buffer(0, vertices.slice(..));
-            pass.draw(0..vertex_count, 0..1);
+            for (vertices, vertex_count) in geometry {
+                if *vertex_count > 0 {
+                    pass.set_vertex_buffer(0, vertices.slice(..));
+                    pass.draw(0..*vertex_count, 0..1);
+                }
+            }
         }
     }
 }

@@ -10,6 +10,7 @@ struct SceneUniforms {
     ambient_ground_shadows: vec4<f32>,
     bounce_strength: vec4<f32>,
     surface: vec4<f32>,
+    atlas_tile_span: vec4<f32>,
 }
 
 const MAX_LIGHTS: u32 = 64u;
@@ -47,6 +48,8 @@ struct Lights {
 @group(0) @binding(3) var<uniform> shadow_faces: array<mat4x4<f32>, MAX_SHADOW_FACES>;
 @group(0) @binding(4) var lightmap: texture_2d<f32>;
 @group(0) @binding(5) var lightmap_sampler: sampler;
+@group(0) @binding(6) var atlas_texture: texture_2d<f32>;
+@group(0) @binding(7) var atlas_sampler: sampler;
 
 const BAYER_4X4: array<f32, 16> = array<f32, 16>(
     0.0, 8.0, 2.0, 10.0,
@@ -60,6 +63,15 @@ struct VertexInput {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) lightmap_uv: vec2<f32>,
+    @location(4) atlas_uv: vec2<f32>,
+    @location(5) atlas_tile: vec4<f32>,
+    @location(6) transform_0: vec4<f32>,
+    @location(7) transform_1: vec4<f32>,
+    @location(8) transform_2: vec4<f32>,
+    @location(9) transform_3: vec4<f32>,
+    @location(10) normal_0: vec4<f32>,
+    @location(11) normal_1: vec4<f32>,
+    @location(12) normal_2: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -68,6 +80,8 @@ struct VertexOutput {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) lightmap_uv: vec2<f32>,
+    @location(4) atlas_uv: vec2<f32>,
+    @location(5) atlas_tile: vec4<f32>,
 }
 
 fn bounced_light(uv: vec2<f32>) -> vec3<f32> {
@@ -79,6 +93,11 @@ fn bounced_light(uv: vec2<f32>) -> vec3<f32> {
 
 fn hash2(cell: vec2<f32>) -> f32 {
     return fract(sin(dot(cell, vec2<f32>(12.9898, 78.233))) * 43758.547);
+}
+
+fn sample_albedo(atlas_tile: vec4<f32>, atlas_uv: vec2<f32>) -> vec3<f32> {
+    let uv = atlas_tile.xy + fract(atlas_uv) * atlas_tile.zw;
+    return textureSample(atlas_texture, atlas_sampler, uv).rgb;
 }
 
 fn surface_texels(world_position: vec3<f32>, normal: vec3<f32>) -> vec2<f32> {
@@ -272,11 +291,16 @@ fn point_lights(world_position: vec3<f32>, normal: vec3<f32>, linear: bool) -> v
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    output.clip_position = snap_to_pixels(scene.view_projection * vec4<f32>(input.position, 1.0));
-    output.world_position = input.position;
-    output.normal = input.normal;
+    let transform = mat4x4<f32>(input.transform_0, input.transform_1, input.transform_2, input.transform_3);
+    let normal = mat3x3<f32>(input.normal_0.xyz, input.normal_1.xyz, input.normal_2.xyz);
+    let position = transform * vec4<f32>(input.position, 1.0);
+    output.clip_position = snap_to_pixels(scene.view_projection * position);
+    output.world_position = position.xyz;
+    output.normal = normalize(normal * input.normal);
     output.color = input.color;
     output.lightmap_uv = input.lightmap_uv;
+    output.atlas_uv = input.atlas_uv;
+    output.atlas_tile = input.atlas_tile;
     return output;
 }
 
@@ -294,13 +318,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     var lit: vec3<f32>;
     if input.color.a > 0.5 {
-        lit = input.color.rgb;
+        lit = input.color.rgb * sample_albedo(input.atlas_tile, input.atlas_uv);
         if linear {
             lit = to_display(tonemap(to_linear(lit) * EMISSIVE_BOOST * scene.fog_color_exposure.w));
         }
     } else {
         let normal = normalize(input.normal);
-        var base = input.color.rgb * pixel_texture(texels, texel_footprint);
+        var base = input.color.rgb * sample_albedo(input.atlas_tile, input.atlas_uv);
         var sky = scene.ambient_sky_resolution.rgb;
         var ground = scene.ambient_ground_shadows.rgb;
         if linear {

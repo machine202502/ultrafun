@@ -1,5 +1,6 @@
 use wgpu::util::DeviceExt;
 
+use super::atlas::Atlas;
 use super::level_mesh::{Vertex, build_level_vertices};
 use super::lightmap::Lightmap;
 use super::lights::LightUniforms;
@@ -20,6 +21,7 @@ pub struct SceneUniforms {
     pub ambient_ground_shadows: [f32; 4],
     pub bounce_strength: [f32; 4],
     pub surface: [f32; 4],
+    pub atlas_tile_span: [f32; 4],
 }
 
 pub struct ScenePass {
@@ -32,7 +34,12 @@ pub struct ScenePass {
 }
 
 impl ScenePass {
-    pub fn new(device: &wgpu::Device, shadows: &ShadowMaps, lightmap: &wgpu::TextureView) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        shadows: &ShadowMaps,
+        lightmap: &wgpu::TextureView,
+        atlas: &Atlas,
+    ) -> Self {
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scene uniforms"),
             size: size_of::<SceneUniforms>() as u64,
@@ -87,6 +94,22 @@ impl ScenePass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
             ],
         });
         let lightmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -101,6 +124,7 @@ impl ScenePass {
             [&uniform_buffer, &light_buffer],
             shadows,
             (lightmap, &lightmap_sampler),
+            atlas,
         );
         let pipeline = create_scene_pipeline(device, &bind_group_layout);
         Self {
@@ -118,6 +142,7 @@ impl ScenePass {
         device: &wgpu::Device,
         shadows: &ShadowMaps,
         lightmap: &wgpu::TextureView,
+        atlas: &Atlas,
     ) {
         self.bind_group = create_bind_group(
             device,
@@ -125,6 +150,7 @@ impl ScenePass {
             [&self.uniform_buffer, &self.light_buffer],
             shadows,
             (lightmap, &self.lightmap_sampler),
+            atlas,
         );
     }
 }
@@ -135,6 +161,7 @@ fn create_bind_group(
     [uniform_buffer, light_buffer]: [&wgpu::Buffer; 2],
     shadows: &ShadowMaps,
     (lightmap, lightmap_sampler): (&wgpu::TextureView, &wgpu::Sampler),
+    atlas: &Atlas,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("scene uniforms"),
@@ -164,6 +191,14 @@ fn create_bind_group(
                 binding: 5,
                 resource: wgpu::BindingResource::Sampler(lightmap_sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(&atlas.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::Sampler(&atlas.sampler),
+            },
         ],
     })
 }
@@ -184,7 +219,10 @@ fn create_scene_pipeline(
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[Some(Vertex::layout())],
+            buffers: &[
+                Some(Vertex::layout()),
+                Some(super::models::Instance::layout()),
+            ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState::default(),
@@ -215,11 +253,12 @@ pub fn create_level_buffer(
     device: &wgpu::Device,
     boxes: &[game::LevelBox],
     lightmap: Option<&Lightmap>,
+    atlas: &Atlas,
 ) -> (wgpu::Buffer, u32) {
     create_vertex_buffer(
         device,
         "level vertices",
-        &build_level_vertices(boxes, lightmap),
+        &build_level_vertices(boxes, lightmap, atlas),
     )
 }
 

@@ -1,6 +1,8 @@
+mod atlas;
 mod level_mesh;
 mod lightmap;
 mod lights;
+mod models;
 mod scene_pass;
 mod shadows;
 mod style;
@@ -15,10 +17,15 @@ use serde::Deserialize;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
-use level_mesh::{GLOWING, LIT, build_box_vertices};
+use atlas::Atlas;
+use level_mesh::{GLOWING, LIT, build_box_vertices, build_decor_vertices};
+
+use crate::level_loader::SceneDecor;
 use lightmap::{BakeSettings, bake, empty_texture};
 pub use lights::{PointLight, RoomLights};
-use lights::{light_uniforms, nearest_lights, shaded_level_lights, unshadowed};
+use lights::{light_uniforms, nearest_lights, shaded_level_lights, shadow_selection, unshadowed};
+pub use models::ModelInstance;
+use models::{Instance, ModelPass};
 use scene_pass::{
     ScenePass, SceneUniforms, color_levels, create_level_buffer, create_vertex_buffer,
 };
@@ -83,10 +90,24 @@ pub struct Renderer {
     options: RenderOptions,
     style: LightingStyle,
     scene: ScenePass,
+    model_scene: ScenePass,
+    viewmodel_scene: ScenePass,
+    models: ModelPass,
+    combat_atlas: Atlas,
+    identity: wgpu::Buffer,
+    dynamic_capacity: u64,
+    occluders: Vec<(Vec3, Vec3)>,
+    occluder_vertices: wgpu::Buffer,
+    occluder_count: u32,
     shadows: ShadowMaps,
     shadows_outdated: bool,
+    shadow_selection: Vec<usize>,
+    level_decor: Vec<SceneDecor>,
+    atlas: Atlas,
     level_vertices: wgpu::Buffer,
     level_vertex_count: u32,
+    decor_vertices: wgpu::Buffer,
+    decor_vertex_count: u32,
     level_boxes: Vec<game::LevelBox>,
     level_lights: Vec<PointLight>,
     lightmap: wgpu::TextureView,
@@ -99,6 +120,7 @@ pub struct LevelView<'a> {
     pub level: &'a game::Level,
     pub atmosphere: Atmosphere,
     pub lights: Vec<PointLight>,
+    pub decor: &'a [SceneDecor],
 }
 
 impl Renderer {
@@ -139,10 +161,27 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let shadows = ShadowMaps::new(&device, shadow_resolution(&style));
+        let atlas = Atlas::load_or_white(&device, &queue);
         let level_boxes = level.level.boxes.clone();
         let (level_vertices, level_vertex_count, lightmap) =
-            build_level(&device, &queue, &level_boxes, &level.lights, &style);
-        let scene = ScenePass::new(&device, &shadows, &lightmap);
+            build_level(&device, &queue, &level_boxes, &level.lights, &style, &atlas);
+        let (decor_vertices, decor_vertex_count) = create_vertex_buffer(
+            &device,
+            "decor vertices",
+            &build_decor_vertices(level.decor, &atlas),
+        );
+        let scene = ScenePass::new(&device, &shadows, &lightmap, &atlas);
+        let combat_atlas = match Atlas::load_manifest(&device, &queue, "combat.ron") {
+            Ok(atlas) => atlas,
+            Err(error) => {
+                log::warn!("combat models unavailable: {error:#}");
+                Atlas::white(&device, &queue)
+            }
+        };
+        let model_scene = ScenePass::new(&device, &shadows, &lightmap, &combat_atlas);
+        let viewmodel_scene = ScenePass::new(&device, &shadows, &lightmap, &combat_atlas);
+        let models = ModelPass::load(&device, &combat_atlas)?;
+        let identity = Instance::identity_buffer(&device);
         let upscaler = Upscaler::new(
             &device,
             format,
@@ -151,6 +190,8 @@ impl Renderer {
         let (dynamic_vertices, dynamic_vertex_count) =
             create_vertex_buffer(&device, "dynamic vertices", &[]);
 
+        let (occluder_vertices, occluder_count) =
+            create_vertex_buffer(&device, "shadow blockers", &[]);
         Ok(Self {
             device,
             queue,
@@ -160,10 +201,24 @@ impl Renderer {
             options,
             style,
             scene,
+            model_scene,
+            viewmodel_scene,
+            models,
+            combat_atlas,
+            identity,
+            dynamic_capacity: 0,
+            occluders: Vec::new(),
+            occluder_vertices,
+            occluder_count,
             shadows,
             shadows_outdated: true,
+            shadow_selection: Vec::new(),
+            level_decor: level.decor.to_vec(),
+            atlas,
             level_vertices,
             level_vertex_count,
+            decor_vertices,
+            decor_vertex_count,
             level_boxes,
             level_lights: level.lights,
             lightmap,
@@ -201,8 +256,7 @@ impl Renderer {
             let resolution = shadow_resolution(style);
             if resolution != self.shadows.resolution {
                 self.shadows.resize(&self.device, resolution);
-                self.scene
-                    .rebind(&self.device, &self.shadows, &self.lightmap);
+                self.rebind_scenes();
             }
             self.shadows_outdated = true;
         }
@@ -219,10 +273,27 @@ impl Renderer {
             &self.level_boxes,
             &self.level_lights,
             &self.style,
+            &self.atlas,
         );
-        self.scene
-            .rebind(&self.device, &self.shadows, &self.lightmap);
+        self.rebind_scenes();
         self.shadows_outdated = true;
+    }
+
+    fn rebind_scenes(&mut self) {
+        self.scene
+            .rebind(&self.device, &self.shadows, &self.lightmap, &self.atlas);
+        self.model_scene.rebind(
+            &self.device,
+            &self.shadows,
+            &self.lightmap,
+            &self.combat_atlas,
+        );
+        self.viewmodel_scene.rebind(
+            &self.device,
+            &self.shadows,
+            &self.lightmap,
+            &self.combat_atlas,
+        );
     }
 
     fn resize_low_resolution(&mut self) {
@@ -235,16 +306,90 @@ impl Renderer {
 
     pub fn set_level(&mut self, level: LevelView) {
         self.level_boxes = level.level.boxes.clone();
+        self.level_decor = level.decor.to_vec();
+        self.shadow_selection.clear();
+        self.occluders.clear();
+        self.occluder_count = 0;
         self.atmosphere = level.atmosphere;
         self.level_lights = level.lights;
+        (self.decor_vertices, self.decor_vertex_count) = create_vertex_buffer(
+            &self.device,
+            "decor vertices",
+            &build_decor_vertices(level.decor, &self.atlas),
+        );
         self.rebuild_level();
     }
 
     pub fn set_dynamic_boxes(&mut self, lit: &[game::LevelBox], glowing: &[game::LevelBox]) {
-        let mut vertices = build_box_vertices(lit, LIT);
-        vertices.extend(build_box_vertices(glowing, GLOWING));
-        (self.dynamic_vertices, self.dynamic_vertex_count) =
-            create_vertex_buffer(&self.device, "dynamic vertices", &vertices);
+        let mut vertices = build_box_vertices(lit, LIT, &self.atlas);
+        vertices.extend(build_box_vertices(glowing, GLOWING, &self.atlas));
+        let bytes = bytemuck::cast_slice(&vertices);
+        self.dynamic_vertex_count = vertices.len() as u32;
+        if bytes.is_empty() {
+            return;
+        }
+        if bytes.len() as u64 > self.dynamic_capacity {
+            self.dynamic_capacity = (bytes.len() as u64).next_power_of_two();
+            self.dynamic_vertices = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("dynamic vertices"),
+                size: self.dynamic_capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.queue.write_buffer(&self.dynamic_vertices, 0, bytes);
+    }
+
+    pub fn reload_materials(&mut self) -> Result<()> {
+        let atlas = Atlas::load(&self.device, &self.queue)?;
+        let combat_atlas = Atlas::load_manifest(&self.device, &self.queue, "combat.ron")?;
+        let models = ModelPass::load(&self.device, &combat_atlas)?;
+        let (decor_vertices, decor_vertex_count) = create_vertex_buffer(
+            &self.device,
+            "decor vertices",
+            &build_decor_vertices(&self.level_decor, &atlas),
+        );
+        self.atlas = atlas;
+        self.combat_atlas = combat_atlas;
+        self.models = models;
+        self.decor_vertices = decor_vertices;
+        self.decor_vertex_count = decor_vertex_count;
+        self.rebuild_level();
+        Ok(())
+    }
+
+    pub fn set_occluders<'a>(&mut self, zones: impl Iterator<Item = &'a game::Zone>) {
+        let occluders: Vec<_> = zones.map(|zone| (zone.center, zone.size)).collect();
+        if occluders == self.occluders {
+            return;
+        }
+        self.occluders = occluders;
+        let boxes: Vec<_> = self
+            .occluders
+            .iter()
+            .map(|(center, size)| game::LevelBox {
+                center: *center,
+                size: *size,
+                rotation_degrees: Vec3::ZERO,
+                material: None,
+                color: [0.5; 3],
+            })
+            .collect();
+        (self.occluder_vertices, self.occluder_count) = create_vertex_buffer(
+            &self.device,
+            "shadow blockers",
+            &build_box_vertices(&boxes, LIT, &self.atlas),
+        );
+        self.shadows_outdated = true;
+    }
+
+    pub fn model_muzzle(&self, instance: &ModelInstance) -> Option<Vec3> {
+        self.models.muzzle(instance)
+    }
+
+    pub fn set_models(&mut self, world: &[ModelInstance], viewmodel: &[ModelInstance]) {
+        self.models
+            .prepare(&self.device, &self.queue, world, viewmodel);
     }
 
     pub fn begin_frame(&mut self, camera: &Camera, dynamic_lights: &[PointLight]) -> Option<Frame> {
@@ -263,20 +408,60 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut lights = shaded_level_lights(&self.level_lights, self.style.shadows);
+        let selected = shadow_selection(&self.level_lights, camera.eye, &self.shadow_selection);
+        if selected != self.shadow_selection {
+            self.shadow_selection = selected;
+            self.shadows_outdated = true;
+        }
+        let mut lights = shaded_level_lights(
+            &self.level_lights,
+            &self.shadow_selection,
+            self.style.shadows,
+        );
         lights.extend(unshadowed(dynamic_lights));
         self.queue.write_buffer(
             &self.scene.uniform_buffer,
             0,
             bytemuck::bytes_of(&self.scene_uniforms(camera)),
         );
+        let uniforms = self.scene_uniforms(camera);
         self.queue.write_buffer(
-            &self.scene.light_buffer,
+            &self.model_scene.uniform_buffer,
             0,
-            bytemuck::bytes_of(&light_uniforms(
-                &nearest_lights(lights, camera.eye),
-                self.style.lamp_brightness,
-            )),
+            bytemuck::bytes_of(&uniforms),
+        );
+        let light_data = light_uniforms(
+            &nearest_lights(lights, camera.eye),
+            self.style.lamp_brightness,
+        );
+        self.queue
+            .write_buffer(&self.scene.light_buffer, 0, bytemuck::bytes_of(&light_data));
+        self.queue.write_buffer(
+            &self.model_scene.light_buffer,
+            0,
+            bytemuck::bytes_of(&light_data),
+        );
+        let view_camera = Camera {
+            eye: Vec3::ZERO,
+            direction: Vec3::NEG_Z,
+            horizontal_fov: 85.0_f32.to_radians(),
+        };
+        let mut view_uniforms = self.scene_uniforms(&view_camera);
+        view_uniforms.fog_ambient_linear = [1000.0, 2000.0, 0.75, 0.0];
+        view_uniforms.ambient_sky_resolution = [1.0, 1.0, 1.0, self.shadows.resolution as f32];
+        view_uniforms.ambient_ground_shadows = [0.65, 0.7, 0.8, 0.0];
+        view_uniforms.sun_direction = [0.3, -0.6, -0.7, 0.4];
+        view_uniforms.resolution_snap_dither[2] = 0.0;
+        view_uniforms.bounce_strength = [0.0; 4];
+        self.queue.write_buffer(
+            &self.viewmodel_scene.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&view_uniforms),
+        );
+        self.queue.write_buffer(
+            &self.viewmodel_scene.light_buffer,
+            0,
+            bytemuck::bytes_of(&light_uniforms(&[], 0.0)),
         );
 
         let mut encoder = self
@@ -288,9 +473,16 @@ impl Renderer {
             self.shadows.render(
                 &self.queue,
                 &mut encoder,
-                &self.level_lights,
-                &self.level_vertices,
-                self.level_vertex_count,
+                &self
+                    .shadow_selection
+                    .iter()
+                    .map(|index| self.level_lights[*index])
+                    .collect::<Vec<_>>(),
+                &[
+                    (&self.level_vertices, self.level_vertex_count),
+                    (&self.decor_vertices, self.decor_vertex_count),
+                    (&self.occluder_vertices, self.occluder_count),
+                ],
             );
             self.shadows_outdated = false;
         }
@@ -321,12 +513,48 @@ impl Renderer {
             });
             pass.set_pipeline(&self.scene.pipeline);
             pass.set_bind_group(0, &self.scene.bind_group, &[]);
+            pass.set_vertex_buffer(1, self.identity.slice(..));
             pass.set_vertex_buffer(0, self.level_vertices.slice(..));
             pass.draw(0..self.level_vertex_count, 0..1);
+            if self.decor_vertex_count > 0 {
+                pass.set_vertex_buffer(0, self.decor_vertices.slice(..));
+                pass.draw(0..self.decor_vertex_count, 0..1);
+            }
             if self.dynamic_vertex_count > 0 {
                 pass.set_vertex_buffer(0, self.dynamic_vertices.slice(..));
                 pass.draw(0..self.dynamic_vertex_count, 0..1);
             }
+            pass.set_pipeline(&self.model_scene.pipeline);
+            pass.set_bind_group(0, &self.model_scene.bind_group, &[]);
+            self.models.draw(&mut pass, false);
+        }
+        if self.models.has_viewmodel() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("viewmodel"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.upscaler.color_view(),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: self.upscaler.depth_view(),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.viewmodel_scene.pipeline);
+            pass.set_bind_group(0, &self.viewmodel_scene.bind_group, &[]);
+            self.models.draw(&mut pass, true);
         }
         self.upscaler.blit(&mut encoder, &view);
 
@@ -409,6 +637,7 @@ impl Renderer {
                 style.face_shading,
                 style.saturation,
             ],
+            atlas_tile_span: [self.atlas.tile_span, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -419,6 +648,7 @@ fn build_level(
     boxes: &[game::LevelBox],
     lights: &[PointLight],
     style: &LightingStyle,
+    atlas: &Atlas,
 ) -> (wgpu::Buffer, u32, wgpu::TextureView) {
     let lightmap = style.gi.then(|| {
         let started = std::time::Instant::now();
@@ -436,7 +666,7 @@ fn build_level(
         );
         lightmap
     });
-    let (buffer, count) = create_level_buffer(device, boxes, lightmap.as_ref());
+    let (buffer, count) = create_level_buffer(device, boxes, lightmap.as_ref(), atlas);
     let view = lightmap.map_or_else(
         || empty_texture(device, queue),
         |lightmap| lightmap.upload(device, queue),

@@ -3,7 +3,7 @@
     horizontal_fov_degrees: 105.0,
     window_width: 1280,
     window_height: 720,
-    level: "utilization",
+    level: "laboratory",
     language: "en",
     master_volume_db: -6.0,
     internal_height: Some(480),
@@ -20,5 +20,6 @@
         slide: ControlLeft,
         respawn: KeyR,
         cheats: F4,
+        weapons: (Digit1, Digit2, Digit3),
     ),
 )

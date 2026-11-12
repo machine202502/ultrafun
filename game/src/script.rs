@@ -423,7 +423,10 @@ impl Game {
             self.config.health.max_health,
         );
         self.parts.clear();
-        self.weapon_cooldown_seconds = 0.0;
+        self.weapon.cooldowns = [0.0; 3];
+        self.weapon.charge = 0.0;
+        self.weapon.beam = None;
+        self.projectiles.clear();
         self.restart_countdown_seconds = None;
         self.rebuild_collision();
     }

@@ -1,4 +1,4 @@
-use game::{AttackState, Game, GameEvent, LevelBox, Target, TargetKind};
+use game::{Game, GameEvent, LevelBox, Target, TargetKind};
 use glam::{EulerRot, Quat, Vec2, Vec3};
 
 use crate::render::{LightingStyle, PointLight};
@@ -20,10 +20,6 @@ const BLOOD_COUNT: usize = 9;
 const BLOOD_SECONDS: f32 = 1.8;
 const BLOOD_SIZE: f32 = 0.07;
 const BLOOD_COLOR: [f32; 3] = [0.42, 0.04, 0.03];
-const GUN_BODY_COLOR: [f32; 3] = [0.17, 0.18, 0.2];
-const GUN_GRIP_COLOR: [f32; 3] = [0.3, 0.17, 0.1];
-const GUN_SIGHT_COLOR: [f32; 3] = [0.75, 0.9, 1.0];
-const GUN_SLEEVE_COLOR: [f32; 3] = [0.22, 0.2, 0.17];
 const GUN_FORWARD: f32 = 0.62;
 const GUN_RIGHT: f32 = 0.22;
 const GUN_DOWN: f32 = 0.19;
@@ -31,14 +27,8 @@ const GUN_MUZZLE_FORWARD: f32 = 0.315;
 const VIEW_KICK_PITCH: f32 = 0.02;
 const VIEW_KICK_YAW: f32 = 0.003;
 const VIEW_KICK_DECAY: f32 = 16.0;
-const GUN_KICK_BACK: f32 = 0.07;
-const GUN_KICK_UP: f32 = 0.02;
-const GUN_KICK_PITCH_DEGREES: f32 = 5.0;
-const GUN_KICK_ROLL_DEGREES: f32 = 9.0;
 const TARGET_FULL_HEALTH_COLOR: [f32; 3] = [0.9, 0.15, 0.1];
 const TARGET_LOW_HEALTH_COLOR: [f32; 3] = [0.25, 0.05, 0.05];
-const GRUNT_COLOR: [f32; 3] = [0.8, 0.72, 0.55];
-const GRUNT_WINDUP_COLOR: [f32; 3] = [1.0, 0.5, 0.1];
 const PART_SIZE: f32 = 0.2;
 const DOOR_COLOR: [f32; 3] = [0.45, 0.08, 0.06];
 const MACHINE_FULL_HEALTH_COLOR: [f32; 3] = [0.55, 0.35, 0.18];
@@ -106,6 +96,8 @@ pub struct Effects {
     sparks: Vec<Spark>,
     blood: Vec<Blood>,
     flashes: Vec<Flash>,
+    hit_reactions: Vec<(u32, f32)>,
+    deaths: Vec<(Vec3, f32)>,
     recoil: f32,
     view_kick: Vec2,
     seed: u32,
@@ -119,14 +111,25 @@ impl Effects {
                 self.spawn_sparks(*position, *normal, SPARK_COLOR);
             }
             GameEvent::EnemyHit {
-                position, normal, ..
-            } => self.spawn_blood(*position, *normal, floor_y.unwrap_or(position.y - 3.0)),
-            GameEvent::ShotFired { end, .. } => {
-                self.tracers.push(Tracer {
-                    start: muzzle,
-                    end: *end,
-                    remaining_seconds: TRACER_SECONDS,
-                });
+                id,
+                position,
+                normal,
+                ..
+            } => {
+                self.hit_reactions.retain(|(enemy, _)| enemy != id);
+                self.hit_reactions.push((*id, 0.16));
+                self.spawn_blood(*position, *normal, floor_y.unwrap_or(position.y - 3.0));
+            }
+            GameEvent::ShotFired {
+                end, weapon, mode, ..
+            } => {
+                if !(*weapon == game::WeaponKind::RivetGun && *mode == game::FireMode::Secondary) {
+                    self.tracers.push(Tracer {
+                        start: muzzle,
+                        end: *end,
+                        remaining_seconds: TRACER_SECONDS,
+                    });
+                }
                 self.flashes.push(Flash {
                     position: muzzle,
                     ..MUZZLE_FLASH
@@ -139,10 +142,18 @@ impl Effects {
                 let jitter = (self.seed >> 9) as f32 / 8_388_608.0 - 1.0;
                 self.view_kick += Vec2::new(jitter * VIEW_KICK_YAW, VIEW_KICK_PITCH);
             }
-            GameEvent::EnemyKilled { position, .. } => self.flashes.push(Flash {
-                position: *position,
-                ..KILL_FLASH
-            }),
+            GameEvent::EnemyKilled { position, .. } => {
+                self.deaths.push((*position, 0.45));
+                self.flashes.push(Flash {
+                    position: *position,
+                    ..KILL_FLASH
+                });
+            }
+            GameEvent::LevelStarted => {
+                self.hit_reactions.clear();
+                self.deaths.clear();
+                self.tracers.clear();
+            }
             _ => {}
         }
     }
@@ -196,6 +207,16 @@ impl Effects {
     }
 
     pub fn advance(&mut self, seconds: f32) {
+        for remaining in self
+            .hit_reactions
+            .iter_mut()
+            .map(|(_, remaining)| remaining)
+            .chain(self.deaths.iter_mut().map(|(_, remaining)| remaining))
+        {
+            *remaining -= seconds;
+        }
+        self.hit_reactions.retain(|(_, remaining)| *remaining > 0.0);
+        self.deaths.retain(|(_, remaining)| *remaining > 0.0);
         for (_, remaining) in &mut self.impacts {
             *remaining -= seconds;
         }
@@ -250,8 +271,37 @@ impl Effects {
         flashes.chain(part_glows).collect()
     }
 
+    #[cfg(test)]
     pub fn view_kick(&self) -> Vec2 {
         self.view_kick
+    }
+
+    pub fn hit_reaction(&self, id: u32) -> f32 {
+        self.hit_reactions
+            .iter()
+            .find(|(enemy, _)| *enemy == id)
+            .map_or(0.0, |(_, remaining)| remaining / 0.16)
+    }
+
+    pub fn death_models(&self) -> Vec<crate::render::ModelInstance> {
+        self.deaths
+            .iter()
+            .map(|(position, remaining)| {
+                let t = (0.45 - remaining) / 0.45;
+                crate::render::ModelInstance {
+                    model: 0,
+                    transform: glam::Mat4::from_translation(
+                        *position - Vec3::Y + Vec3::Y * (t * 0.5 - t * t),
+                    ) * glam::Mat4::from_rotation_z(t * 1.3)
+                        * glam::Mat4::from_scale(Vec3::splat((1.0 - t * t).max(0.05))),
+                    joints: vec![
+                        ("left_arm".into(), glam::Mat4::from_rotation_z(t * 2.0)),
+                        ("right_arm".into(), glam::Mat4::from_rotation_z(-t * 2.0)),
+                        ("head".into(), glam::Mat4::from_translation(Vec3::Y * t)),
+                    ],
+                }
+            })
+            .collect()
     }
 
     pub fn recoil(&self) -> f32 {
@@ -265,6 +315,7 @@ impl Effects {
                 center: spark.position,
                 size: Vec3::splat(SPARK_SIZE * (0.35 + 0.65 * t)),
                 rotation_degrees: Vec3::ZERO,
+                material: None,
                 color: [0, 1, 2].map(|channel| spark.color[channel] * (0.25 + 0.75 * t)),
             }
         });
@@ -274,27 +325,19 @@ impl Effects {
                 center: *position,
                 size: Vec3::splat(IMPACT_FLASH_SIZE * (0.4 + 0.6 * (1.0 - t))),
                 rotation_degrees: Vec3::ZERO,
+                material: None,
                 color: [0, 1, 2].map(|channel| IMPACT_FLASH_COLOR[channel] * (0.3 + 0.7 * t)),
             }
         });
         sparks.chain(impacts).collect()
     }
 
-    pub fn dynamic_boxes(&self, game: &Game, alpha: f32) -> Vec<LevelBox> {
-        let grunt = &game.config.grunt;
-        let enemy_boxes = game.enemies.iter().map(|enemy| LevelBox {
-            center: enemy.interpolated_position(alpha) + Vec3::Y * grunt.height * 0.5,
-            size: Vec3::new(grunt.radius * 2.0, grunt.height, grunt.radius * 2.0),
-            rotation_degrees: Vec3::ZERO,
-            color: match enemy.attack {
-                AttackState::Windup { .. } => GRUNT_WINDUP_COLOR,
-                AttackState::Ready | AttackState::Recover { .. } => GRUNT_COLOR,
-            },
-        });
+    pub fn dynamic_boxes(&self, game: &Game, alpha: f32, muzzle: Vec3) -> Vec<LevelBox> {
         let part_boxes = game.parts.iter().map(|part| LevelBox {
             center: part.interpolated_position(alpha),
             size: Vec3::splat(PART_SIZE),
             rotation_degrees: Vec3::ZERO,
+            material: None,
             color: PART_COLOR,
         });
         let target_boxes = target_boxes(&game.targets);
@@ -302,6 +345,7 @@ impl Effects {
             center: door.center,
             size: door.size,
             rotation_degrees: Vec3::ZERO,
+            material: None,
             color: DOOR_COLOR,
         });
         let crusher_boxes = crusher_boxes(game, alpha);
@@ -317,14 +361,32 @@ impl Effects {
                 center: drop.position,
                 size,
                 rotation_degrees: Vec3::ZERO,
+                material: None,
                 color: [0, 1, 2].map(|channel| BLOOD_COLOR[channel] * (0.55 + 0.45 * t)),
             }
         });
+        let projectiles = game.projectiles.iter().map(|projectile| LevelBox {
+            center: projectile
+                .previous_position
+                .lerp(projectile.position, alpha),
+            size: Vec3::new(0.12, 0.12, 0.35),
+            rotation_degrees: Vec3::ZERO,
+            material: None,
+            color: [1.0, 0.4, 0.07],
+        });
+        let beam = game.weapon.beam.and_then(|(_, end)| {
+            tracer_box(&Tracer {
+                start: muzzle,
+                end,
+                remaining_seconds: TRACER_SECONDS,
+            })
+        });
         target_boxes
+            .chain(projectiles)
+            .chain(beam)
             .chain(door_boxes)
             .chain(crusher_boxes)
             .chain(script_boxes(game))
-            .chain(enemy_boxes)
             .chain(part_boxes)
             .chain(tracer_boxes)
             .chain(blood_boxes)
@@ -341,6 +403,7 @@ pub fn glowing_boxes(game: &Game) -> impl Iterator<Item = LevelBox> + '_ {
             center: hazard.zone.center,
             size: hazard.zone.size,
             rotation_degrees: Vec3::ZERO,
+            material: None,
             color: hazard.color,
         });
     let keys = game
@@ -351,6 +414,7 @@ pub fn glowing_boxes(game: &Game) -> impl Iterator<Item = LevelBox> + '_ {
             center: key.zone.center + Vec3::Y * (seconds * KEY_BOB_HZ).sin() * KEY_BOB_HEIGHT,
             size: key.zone.size,
             rotation_degrees: Vec3::new(0.0, (seconds * KEY_SPIN_DEGREES).rem_euclid(360.0), 0.0),
+            material: None,
             color: key.color,
         });
     hazards.chain(keys)
@@ -367,6 +431,7 @@ fn script_boxes(game: &Game) -> impl Iterator<Item = LevelBox> + '_ {
                 center: zone.center,
                 size: zone.size,
                 rotation_degrees: Vec3::ZERO,
+                material: None,
                 color,
             })
         });
@@ -380,6 +445,7 @@ fn script_boxes(game: &Game) -> impl Iterator<Item = LevelBox> + '_ {
                 center: zone.center,
                 size: zone.size,
                 rotation_degrees: Vec3::ZERO,
+                material: None,
                 color,
             })
         });
@@ -387,6 +453,7 @@ fn script_boxes(game: &Game) -> impl Iterator<Item = LevelBox> + '_ {
         center: switch.zone.center,
         size: switch.zone.size,
         rotation_degrees: Vec3::ZERO,
+        material: None,
         color: if switch.activated {
             switch.color.map(|channel| channel * SWITCH_ACTIVATED_SHADE)
         } else {
@@ -404,6 +471,7 @@ fn crusher_boxes(game: &Game, alpha: f32) -> impl Iterator<Item = LevelBox> + '_
             .lerp(crusher.center_at(seconds), alpha),
         size: crusher.size,
         rotation_degrees: Vec3::ZERO,
+        material: None,
         color: crusher.color,
     })
 }
@@ -415,6 +483,7 @@ fn target_boxes(targets: &[Target]) -> impl Iterator<Item = LevelBox> + '_ {
             center: target.center,
             size: target.size,
             rotation_degrees: Vec3::ZERO,
+            material: None,
             color: match target.kind {
                 TargetKind::Practice => {
                     lerp_color(TARGET_LOW_HEALTH_COLOR, TARGET_FULL_HEALTH_COLOR, health)
@@ -443,88 +512,11 @@ fn tracer_box(tracer: &Tracer) -> Option<LevelBox> {
             length,
         ),
         rotation_degrees: Vec3::new(x.to_degrees(), y.to_degrees(), z.to_degrees()),
+        material: None,
         color: [0, 1, 2].map(|channel| TRACER_COLOR[channel] * (0.12 + 0.88 * t)),
     })
 }
 
-pub fn viewmodel_boxes(
-    eye: Vec3,
-    forward: Vec3,
-    speed: f32,
-    seconds: f32,
-    recoil: f32,
-) -> Vec<LevelBox> {
-    let right = forward.cross(Vec3::Y).normalize_or_zero();
-    let up = right.cross(forward).normalize_or_zero();
-    let run_speed = 16.5;
-    let sway = (seconds * 9.0).sin() * (speed / run_speed).min(1.0) * 0.012;
-    let origin = eye
-        + right * GUN_RIGHT
-        + up * (-GUN_DOWN + sway + recoil * GUN_KICK_UP)
-        + forward * (GUN_FORWARD - recoil * GUN_KICK_BACK);
-    let basis = glam::Mat3::from_cols(right, up, -forward)
-        * glam::Mat3::from_axis_angle(Vec3::Y, 0.05)
-        * glam::Mat3::from_axis_angle(Vec3::X, -recoil * GUN_KICK_PITCH_DEGREES.to_radians())
-        * glam::Mat3::from_axis_angle(Vec3::Z, 0.05 + recoil * GUN_KICK_ROLL_DEGREES.to_radians());
-    let (x, y, z) = Quat::from_mat3(&basis).to_euler(EulerRot::XYZ);
-    let rotation = Vec3::new(x.to_degrees(), y.to_degrees(), z.to_degrees());
-    let parts = [
-        (
-            Vec3::new(0.0, -0.015, 0.12),
-            Vec3::new(0.05, 0.055, 0.27),
-            GUN_BODY_COLOR,
-        ),
-        (
-            Vec3::new(0.0, 0.035, 0.13),
-            Vec3::new(0.05, 0.05, 0.3),
-            GUN_BODY_COLOR,
-        ),
-        (
-            Vec3::new(0.0, -0.135, 0.0),
-            Vec3::new(0.05, 0.18, 0.085),
-            GUN_GRIP_COLOR,
-        ),
-        (
-            Vec3::new(0.0, -0.075, 0.085),
-            Vec3::new(0.05, 0.02, 0.055),
-            GUN_BODY_COLOR,
-        ),
-        (
-            Vec3::new(0.0, 0.035, 0.295),
-            Vec3::new(0.028, 0.028, 0.04),
-            GUN_BODY_COLOR,
-        ),
-        (
-            Vec3::new(0.0, 0.068, 0.02),
-            Vec3::new(0.032, 0.016, 0.02),
-            GUN_SIGHT_COLOR,
-        ),
-        (
-            Vec3::new(0.0, 0.068, 0.2),
-            Vec3::new(0.016, 0.016, 0.02),
-            GUN_SIGHT_COLOR,
-        ),
-        (
-            Vec3::new(0.02, -0.23, -0.05),
-            Vec3::new(0.08, 0.1, 0.18),
-            GUN_GRIP_COLOR,
-        ),
-        (
-            Vec3::new(0.04, -0.27, -0.22),
-            Vec3::new(0.1, 0.12, 0.28),
-            GUN_SLEEVE_COLOR,
-        ),
-    ];
-    parts
-        .into_iter()
-        .map(|(offset, size, color)| LevelBox {
-            center: origin + right * offset.x + up * offset.y + forward * offset.z,
-            size,
-            rotation_degrees: rotation,
-            color,
-        })
-        .collect()
-}
 fn lerp_color(from: [f32; 3], to: [f32; 3], amount: f32) -> [f32; 3] {
     [0, 1, 2].map(|channel| from[channel] + (to[channel] - from[channel]) * amount)
 }
@@ -545,6 +537,7 @@ pub fn lamp_fixtures(lights: &[PointLight], style: &LightingStyle) -> Vec<LevelB
             center: light.position,
             size: Vec3::splat(style.fixture_size),
             rotation_degrees: Vec3::ZERO,
+            material: None,
             color: light.color,
         })
         .collect()
@@ -596,6 +589,8 @@ mod tests {
             &GameEvent::ShotFired {
                 origin: Vec3::ZERO,
                 end: Vec3::new(0.0, 0.0, -5.0),
+                weapon: game::WeaponKind::RivetGun,
+                mode: game::FireMode::Primary,
             },
             Vec3::ZERO,
             None,

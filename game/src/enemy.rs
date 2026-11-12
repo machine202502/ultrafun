@@ -55,6 +55,9 @@ pub struct Enemy {
     pub health: f32,
     pub attack: AttackState,
     pub knockback: Vec3,
+    pub pinned_seconds: f32,
+    pub waypoint: Vec3,
+    pub navigation_seconds: f32,
 }
 
 impl Enemy {
@@ -69,6 +72,9 @@ impl Enemy {
             health: config.max_health,
             attack: AttackState::Ready,
             knockback: Vec3::ZERO,
+            pinned_seconds: 0.0,
+            waypoint: position,
+            navigation_seconds: 0.0,
         }
     }
 
@@ -100,12 +106,20 @@ pub fn update_enemies(
     player: &mut Player,
     config: &GruntConfig,
     world: &CollisionWorld,
+    navigation: &[crate::NavNode],
     events: &mut Vec<GameEvent>,
     dt: f32,
 ) {
     let body = config.body();
     for enemy in enemies.iter_mut() {
         enemy.previous_position = enemy.position;
+        if enemy.pinned_seconds > 0.0 {
+            enemy.pinned_seconds = (enemy.pinned_seconds - dt).max(0.0);
+            enemy.velocity = Vec3::ZERO;
+            enemy.knockback = Vec3::ZERO;
+            enemy.attack = AttackState::Ready;
+            continue;
+        }
         let to_player = player.position - enemy.position;
         let flat_to_player = Vec3::new(to_player.x, 0.0, to_player.z);
         let distance = flat_to_player.length();
@@ -118,15 +132,27 @@ pub fn update_enemies(
         enemy.attack =
             next_attack_state(enemy.attack, reach, sees_player, player, config, events, dt);
 
+        enemy.navigation_seconds -= dt;
+        if enemy.navigation_seconds <= 0.0 {
+            enemy.waypoint = if sees_player && to_player.y.abs() < config.step_height {
+                player.position
+            } else {
+                crate::navigation::next_waypoint(navigation, world, enemy.position, player.position)
+            };
+            enemy.navigation_seconds = 0.2 + (enemy.id % 7) as f32 * 0.01;
+        }
+        let to_waypoint = enemy.waypoint - enemy.position;
         let chasing = !matches!(enemy.attack, AttackState::Windup { .. })
-            && distance > config.attack_range * 0.75;
+            && (distance > config.attack_range * 0.75 || to_player.y.abs() > config.step_height);
         let stagger = if enemy.knockback.length() > 1.0 {
             1.0
         } else {
             0.0
         };
         let flat_velocity = if chasing {
-            flat_to_player.normalize_or_zero() * config.run_speed * (1.0 - stagger)
+            Vec3::new(to_waypoint.x, 0.0, to_waypoint.z).normalize_or_zero()
+                * config.run_speed
+                * (1.0 - stagger)
         } else {
             Vec3::ZERO
         };

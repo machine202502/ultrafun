@@ -1,5 +1,6 @@
 mod frame;
 mod reload;
+mod remote;
 mod screenshot;
 
 use std::sync::Arc;
@@ -21,12 +22,13 @@ use crate::input::Input;
 use crate::levels::{LEVELS_DIRECTORY, LoadedLevel, load_level};
 use crate::lighting_lab::LightingLab;
 use crate::overlay::{DebugReport, Overlay};
+use crate::remote_debug::{REMOTE_DEBUG_PORT, RemoteDebug};
 use crate::render::{Atmosphere, LevelView, LightingFile, PointLight, Renderer};
 use crate::screenshots::ScreenshotRun;
 use crate::settings::Settings;
 use crate::text::Texts;
 
-const DATA_DIRECTORY: &str = "assets/data";
+pub(crate) const DATA_DIRECTORY: &str = "assets/data";
 const SETTINGS_FILE: &str = "settings_default.ron";
 const MOVEMENT_FILE: &str = "movement.ron";
 const WEAPONS_FILE: &str = "weapons.ron";
@@ -39,11 +41,14 @@ const MAX_STEPS_PER_FRAME: u32 = 8;
 pub struct App {
     data: DataFiles,
     levels: DataFiles,
+    textures: DataFiles,
+    models: DataFiles,
     level_name: String,
     settings: Settings,
     atmosphere: Atmosphere,
     level_lights: Vec<PointLight>,
     game: game::Game,
+    decor: Vec<crate::level_loader::SceneDecor>,
     input: Input,
     mouse_captured: bool,
     last_frame: Instant,
@@ -55,6 +60,9 @@ pub struct App {
     texts: Texts,
     lab: LightingLab,
     screenshots: Option<ScreenshotRun>,
+    preview_queue: Option<Vec<String>>,
+    preview_capturing: Option<String>,
+    remote: Option<RemoteDebug>,
     exit_requested: bool,
     menu: crate::menu::Menu,
     pause: crate::menu::PauseMenu,
@@ -71,7 +79,11 @@ struct WindowState {
 }
 
 impl App {
-    pub fn new(screenshots: Option<crate::screenshots::ScreenshotArgs>) -> Result<Self> {
+    pub fn new(
+        screenshots: Option<crate::screenshots::ScreenshotArgs>,
+        remote_debug: bool,
+        make_previews: bool,
+    ) -> Result<Self> {
         let data = DataFiles::open(DATA_DIRECTORY)?;
         let levels = DataFiles::open(LEVELS_DIRECTORY)?;
         let settings: Settings = data.load(SETTINGS_FILE)?;
@@ -103,6 +115,7 @@ impl App {
             level,
             atmosphere,
             lights: level_lights,
+            decor,
         } = load_level(&data, &levels, &level_name)?;
         let config = game::GameConfig {
             movement: data.load(MOVEMENT_FILE)?,
@@ -110,14 +123,30 @@ impl App {
             health: data.load(HEALTH_FILE)?,
             grunt: data.load(GRUNT_FILE)?,
         };
+        let remote = match remote_debug {
+            true => match RemoteDebug::start(REMOTE_DEBUG_PORT) {
+                Ok(remote) => {
+                    log::info!("remote debug listening on 127.0.0.1:{}", remote.port());
+                    Some(remote)
+                }
+                Err(error) => {
+                    log::warn!("remote debug not started: {error}");
+                    None
+                }
+            },
+            false => None,
+        };
         Ok(Self {
             data,
             levels,
+            textures: DataFiles::open("assets/textures")?,
+            models: DataFiles::open("assets/models")?,
             level_name,
             settings,
             atmosphere,
             level_lights,
             game: game::Game::new(level, config),
+            decor,
             input: Input::default(),
             mouse_captured: false,
             last_frame: Instant::now(),
@@ -161,6 +190,15 @@ impl App {
             pending_pause: None,
             cursor_logical: None,
             lab: LightingLab::new(lighting),
+            preview_queue: make_previews.then(|| {
+                crate::levels::SWITCHABLE_LEVELS
+                    .iter()
+                    .rev()
+                    .map(|name| (*name).to_owned())
+                    .collect()
+            }),
+            preview_capturing: None,
+            remote,
             window_state: None,
         })
     }
@@ -180,6 +218,7 @@ impl App {
                 level: self.game.level(),
                 atmosphere: self.atmosphere.clone(),
                 lights: self.level_lights.clone(),
+                decor: &self.decor,
             },
             self.settings.render_options(),
             self.lab.style().clone(),
@@ -379,6 +418,24 @@ impl ApplicationHandler for App {
                 (ElementState::Pressed, true) => self.input.set_fire_held(true),
                 (ElementState::Released, _) => self.input.set_fire_held(false),
             },
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Right,
+                ..
+            } => {
+                if self.mouse_captured || state == ElementState::Released {
+                    self.input.set_alt_held(state == ElementState::Pressed);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.mouse_captured => {
+                let delta = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+                    winit::event::MouseScrollDelta::PixelDelta(position) => position.y,
+                };
+                if delta.abs() > 0.0 {
+                    self.input.cycle_weapon(if delta > 0.0 { -1 } else { 1 });
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if !event.repeat => {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     match event.state {
